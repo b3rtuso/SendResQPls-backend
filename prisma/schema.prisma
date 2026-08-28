@@ -1,0 +1,178 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model User {
+  id           String     @id @default(uuid())
+  phoneNumber  String?    @unique // Mobile users might prefer phone login
+  email        String?    @unique
+  name         String
+  passwordHash String
+  role         Role       @default(CITIZEN)
+  isActive     Boolean    @default(true) // Admins can be soft-deactivated without data loss
+  incidents    Incident[]
+  createdAt    DateTime   @default(now())
+  otpCode      String?
+  pushToken    String?
+}
+
+model Incident {
+  id                    String      @id @default(uuid())
+  latitude              Float       // From user's GPS
+  longitude             Float       // From user's GPS
+  photoUrl              String      // Required: The photo taken by the user
+  
+  // AI Recommendations
+  aiDetectedType        String?     // e.g., "Fire", "Flood", "Fallen Tree"
+  aiRecommendedDept     Department? // e.g., BFP, PNP, Engineering
+  
+  // Admin Actions
+  assignedDepartment    Department? // The final decision made by the admin
+  status                Status      @default(PENDING)
+  adminNotes            String?     // Notes added by the MDRRMO dispatcher
+  
+  // Severity & Urgency Ranking
+  severity              String?     // "CRITICAL" | "HIGH" | "MEDIUM" | "LOW"
+  urgencyScore          Int?        // 0 to 100
+
+  reporterId            String
+  reporter              User            @relation(fields: [reporterId], references: [id])
+  
+  resolutionForm        ResolutionForm?
+  activities            IncidentActivity[]
+
+  createdAt             DateTime        @default(now())
+  updatedAt             DateTime        @updatedAt
+}
+
+model IncidentActivity {
+  id          String   @id @default(uuid())
+  incidentId  String
+  incident    Incident @relation(fields: [incidentId], references: [id], onDelete: Cascade)
+
+  title       String
+  description String?
+  type        String   @default("STATUS_CHANGE") // REPORTED, AI_ANALYSIS, ASSIGNED, STATUS_CHANGE, ADMIN_NOTE
+  createdAt   DateTime @default(now())
+
+  @@index([incidentId])
+}
+
+model ResolutionForm {
+  id                    String   @id @default(uuid())
+  incidentId            String   @unique
+  incident              Incident @relation(fields: [incidentId], references: [id], onDelete: Cascade)
+
+  // Incident Information
+  incidentType          String?
+  incidentDate          String?
+  incidentTime          String?
+  incidentLocation      String?
+
+  // Patient Information
+  patientName           String?
+  patientAge            String?
+  patientSex            String?
+  patientAddress        String?
+
+  // Incident Details
+  howIncidentHappened   String?
+  intoxicationSuspected String?  // "Yes" | "No"
+  mechanismOfInjury     String?
+
+  // Patient Assessment
+  injuriesObserved      String?
+  gcsLevel              String?
+  airwayStatus          String?
+  breathingStatus       String?
+  circulationStatus     String?
+
+  // Vital Signs
+  bloodPressure         String?
+  pulseRate             String?
+  respiratoryRate       String?
+  oxygenSaturation      String?
+  temperature           String?
+  gcsScore              String?
+
+  // Pre-hospital Care
+  treatmentInterventions String?
+  bleedingControlled    String?  // "Yes" | "No" | "N/A"
+  patientImmobilized    String?  // "Yes" | "No" | "N/A"
+  woundsCleaned         String?  // "Yes" | "No" | "N/A"
+  oxygenAdministered    String?  // "Yes" | "No" | "N/A"
+
+  // Ongoing Procedure / Rescue Photo
+  procedurePhotoUrl     String?
+
+  // Response Information
+  respondingAgency      String?
+  responderNames        String?
+  arrivalTime           String?
+  departureTime         String?
+
+  // Patient Disposition
+  dispositionStatus     String?  // "TRANSPORTED" | "REFUSED_TRANSPORT" | "DEAD_ON_SPOT" | "CANCELLED"
+  destinationFacility   String?
+  transportTime         String?
+  turnoverStatus        String?
+
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+}
+
+enum Role {
+  CITIZEN  // Uses mobile app
+  ADMIN    // Uses web app (MDRRMO Dispatcher)
+}
+
+enum Status {
+  PENDING      // Just reported
+  REVIEWING    // Admin is looking at it
+  DISPATCHED   // Responders sent out
+  RESOLVED     // Handled
+  REJECTED     // Fake report
+}
+
+// Common Philippine MDRRMO partner departments
+enum Department {
+  BFP         // Bureau of Fire Protection
+  PNP         // Phil. National Police
+  MEDICAL     // Ambulance / Red Cross
+  ENGINEERING // DPWH / Local Engineering (fallen trees, road blocks)
+  RESCUE      // General MDRRMO Rescue Team
+}
+
+model DepartmentInfo {
+  id             String   @id @default(uuid())
+  name           String   @unique
+  fullName       String
+  headOfficer    String
+  contact        String
+  email          String
+  personnelCount Int      @default(0)
+  equipment      String[] @default([])
+  status         String   @default("Available") // Available, On Standby, Deployed
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+}
+
+model CallLog {
+  id          String   @id @default(uuid())
+  requestId   String?  // Linked Incident ID or "DIRECT"
+  callerName  String   // Name of the dispatcher/admin placing the call
+  department  String   // e.g., "BFP", "PNP", "Medical EMS", or contact name
+  contact     String   // Target phone number
+  duration    String   @default("0:45") // Duration or status e.g. "1:20"
+  status      String   @default("Accepted") // "Accepted" | "No Response" | "Declined"
+  timestamp   DateTime @default(now())
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([timestamp])
+  @@index([requestId])
+}
