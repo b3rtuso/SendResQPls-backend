@@ -39,6 +39,11 @@ model Incident {
   severity              String?     // "CRITICAL" | "HIGH" | "MEDIUM" | "LOW"
   urgencyScore          Int?        // 0 to 100
 
+  // Concurrency Lock
+  lockedByAdminId       String?
+  lockedByAdminName     String?
+  lockedAt              DateTime?
+
   reporterId            String
   reporter              User            @relation(fields: [reporterId], references: [id])
   
@@ -47,6 +52,10 @@ model Incident {
 
   createdAt             DateTime        @default(now())
   updatedAt             DateTime        @updatedAt
+
+  @@index([reporterId])
+  @@index([createdAt])
+  @@index([status])
 }
 
 model IncidentActivity {

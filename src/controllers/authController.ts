@@ -5,6 +5,7 @@ import jwt from 'jsonwebtoken';
 import { sendVerificationEmail, sendPasswordResetEmail } from '../services/emailService';
 import { AuthRequest } from '../middleware/auth';
 import { redis } from '../config/redis';
+import { validatePhilippineMobile } from '../utils/validators';
 
 // ── JWT Secret — crash immediately on startup if not configured ───────────────
 const JWT_SECRET = process.env.JWT_SECRET;
@@ -28,7 +29,7 @@ export const sendCode = async (req: Request, res: Response) => {
 
     // Generate 6-digit code
     const code = Math.floor(100000 + Math.random() * 900000).toString();
-    const expiresAt = Date.now() + 10 * 60 * 1000; // 10 minutes
+    const expiresAt = Date.now() + 60 * 1000; // 60 seconds (1 minute)
 
     // Store it
     verificationCodes.set(email, { code, expiresAt });
@@ -76,12 +77,32 @@ export const register = async (req: Request, res: Response) => {
     // Note: 'role' is intentionally excluded — users always register as CITIZEN.
     // Admin accounts must be created by an existing admin via POST /api/auth/admin/create.
     const { name, email, password, phoneNumber } = req.body;
+
+    if (!name || !email || !password) {
+      return res.status(400).json({ error: 'Name, email, and password are required.' });
+    }
+
+    const phoneValidation = validatePhilippineMobile(phoneNumber);
+    if (!phoneValidation.valid) {
+      return res.status(400).json({ error: phoneValidation.error });
+    }
+
     const hashedPassword = await bcrypt.hash(password, 8); // 8 rounds = ~80ms, still secure
     const newUser = await prisma.user.create({
-      data: { name, email, passwordHash: hashedPassword, phoneNumber: phoneNumber || null, role: 'CITIZEN' }
+      data: { name, email, passwordHash: hashedPassword, phoneNumber: phoneValidation.cleaned, role: 'CITIZEN' }
     });
     res.status(201).json(newUser);
   } catch (error: any) {
+    if (error.code === 'P2002') {
+      const target = error.meta?.target;
+      if (Array.isArray(target) && target.includes('phoneNumber')) {
+        return res.status(400).json({ error: 'This mobile number is already registered to another account.' });
+      }
+      if (Array.isArray(target) && target.includes('email')) {
+        return res.status(400).json({ error: 'This email is already registered to another account.' });
+      }
+      return res.status(400).json({ error: 'An account with this email or mobile number already exists.' });
+    }
     res.status(500).json({ error: 'Registration failed. Please try again.' });
   }
 };
@@ -172,7 +193,22 @@ export const updateProfile = async (req: AuthRequest, res: Response) => {
     const data: any = {};
     if (name) data.name = name;
     if (email) data.email = email;
-    if (phoneNumber !== undefined) data.phoneNumber = phoneNumber;
+    if (phoneNumber !== undefined) {
+      const phoneValidation = validatePhilippineMobile(phoneNumber);
+      if (!phoneValidation.valid) {
+        return res.status(400).json({ error: phoneValidation.error });
+      }
+      const existingPhone = await prisma.user.findFirst({
+        where: {
+          phoneNumber: phoneValidation.cleaned,
+          NOT: { id: userId },
+        },
+      });
+      if (existingPhone) {
+        return res.status(400).json({ error: 'Mobile number is already in use by another account.' });
+      }
+      data.phoneNumber = phoneValidation.cleaned;
+    }
     if (pushToken !== undefined) data.pushToken = pushToken;
 
     const updated = await prisma.user.update({
@@ -309,9 +345,21 @@ export const createAdmin = async (req: AuthRequest, res: Response) => {
       return res.status(400).json({ error: 'Admin password must be at least 8 characters.' });
     }
 
+    const phoneValidation = validatePhilippineMobile(phoneNumber);
+    if (!phoneValidation.valid) {
+      return res.status(400).json({ error: phoneValidation.error });
+    }
+
     const existing = await prisma.user.findUnique({ where: { email } });
     if (existing) {
       return res.status(400).json({ error: 'An account with this email already exists.' });
+    }
+
+    const existingPhone = await prisma.user.findFirst({
+      where: { phoneNumber: phoneValidation.cleaned },
+    });
+    if (existingPhone) {
+      return res.status(400).json({ error: 'An account with this mobile number already exists.' });
     }
 
     const hashedPassword = await bcrypt.hash(password, 10);
@@ -320,7 +368,7 @@ export const createAdmin = async (req: AuthRequest, res: Response) => {
         name,
         email,
         passwordHash: hashedPassword,
-        phoneNumber: phoneNumber || null,
+        phoneNumber: phoneValidation.cleaned,
         role: 'ADMIN',
         isActive: true,
       },
@@ -377,5 +425,57 @@ export const deactivateAdmin = async (req: AuthRequest, res: Response) => {
   } catch (error: any) {
     console.error('❌ Deactivate admin error:', error.message);
     res.status(500).json({ error: 'Failed to update admin account status' });
+  }
+};
+
+// DELETE /api/auth/admin/:id — Permanently delete an admin account & credentials (admin only)
+export const deleteAdmin = async (req: AuthRequest, res: Response) => {
+  try {
+    const { id } = req.params;
+
+    // 1. Prevent self-deletion
+    if (id === req.user!.userId) {
+      return res.status(400).json({ error: 'You cannot delete your own account.' });
+    }
+
+    // 2. Verify admin exists
+    const target = await prisma.user.findUnique({ where: { id } });
+    if (!target) {
+      return res.status(404).json({ error: 'Admin account not found.' });
+    }
+    if (target.role !== 'ADMIN') {
+      return res.status(400).json({ error: 'Only administrator accounts can be deleted here.' });
+    }
+
+    // 3. Prevent deleting the only remaining active admin
+    const activeAdminCount = await prisma.user.count({
+      where: { role: 'ADMIN', isActive: true, NOT: { id } }
+    });
+    if (activeAdminCount === 0) {
+      return res.status(400).json({ error: 'Cannot delete the only remaining active administrator account.' });
+    }
+
+    // 4. Check for linked incident reports to prevent foreign key violations
+    const incidentCount = await prisma.incident.count({ where: { reporterId: id } });
+    if (incidentCount > 0) {
+      return res.status(400).json({
+        error: `Cannot delete admin: this account is linked to ${incidentCount} incident report(s). Please deactivate the account instead.`
+      });
+    }
+
+    // 5. Permanently remove the admin and their credentials from the database
+    // First clear any active incident concurrency locks held by this admin
+    await prisma.incident.updateMany({
+      where: { lockedByAdminId: id },
+      data: { lockedByAdminId: null, lockedByAdminName: null, lockedAt: null },
+    });
+
+    await prisma.user.delete({ where: { id } });
+
+    console.log(`🗑️ Admin ${target.email} (ID: ${id}) permanently deleted by ${req.user!.userId}`);
+    res.json({ message: `Administrator account for ${target.name} (${target.email}) permanently deleted.` });
+  } catch (error: any) {
+    console.error('❌ Delete admin error:', error.message);
+    res.status(500).json({ error: 'Failed to delete administrator account' });
   }
 };

@@ -33,6 +33,8 @@ export const requireAuth = (req: AuthRequest, res: Response, next: NextFunction)
   }
 };
 
+export const authenticate = requireAuth;
+
 /**
  * requireAdmin - extends requireAuth, also checks role === 'ADMIN'.
  * Returns 403 if user is authenticated but not an admin.

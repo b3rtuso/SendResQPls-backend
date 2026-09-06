@@ -80,41 +80,73 @@ export const runAIAnalysis = async (imageUrl: string) => {
   try {
     const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
 
-    const imageResponse = await axios.get(imageUrl, { responseType: 'arraybuffer' });
-    const imageData = Buffer.from(imageResponse.data).toString("base64");
+    let imageData: string;
+    let mimeType = "image/jpeg";
+
+    if (imageUrl.startsWith("data:")) {
+      const parts = imageUrl.split(",");
+      const match = parts[0].match(/:(.*?);/);
+      if (match) mimeType = match[1];
+      imageData = parts[1];
+    } else if (imageUrl.startsWith("http://") || imageUrl.startsWith("https://")) {
+      const imageResponse = await axios.get(imageUrl, { responseType: "arraybuffer" });
+      const contentType = imageResponse.headers["content-type"];
+      if (contentType) mimeType = contentType;
+      imageData = Buffer.from(imageResponse.data).toString("base64");
+    } else {
+      const fs = await import("fs/promises");
+      const path = await import("path");
+      const ext = path.extname(imageUrl).toLowerCase();
+      if (ext === ".png") mimeType = "image/png";
+      else if (ext === ".webp") mimeType = "image/webp";
+      const fileBuffer = await fs.readFile(imageUrl);
+      imageData = fileBuffer.toString("base64");
+    }
 
     const prompt = `You are an emergency incident classifier and urgency evaluator for MDRRMO Balayan, Batangas Philippines.
 Analyze this image and determine if it shows a real emergency incident.
 
 Return ONLY a JSON object with this exact structure:
 {
-  "incidentType": "<specific type e.g. Fire, Flood, Vehicular Accident, Medical Emergency, Fallen Tree, or 'Unrecognized'>",
+  "incidentType": "<Fire|Flood|Vehicular Accident|Medical Emergency|Trauma|Crime|Typhoon|Landslide|Unrecognized>",
   "recommendedDept": "<BFP|PNP|MEDICAL|ENGINEERING|RESCUE|UNKNOWN>",
   "confidence": "<high|medium|low>",
   "severity": "<CRITICAL|HIGH|MEDIUM|LOW>",
   "urgencyScore": <number 1-100>,
   "recognized": <true|false>,
-  "suggestAction": "<PROCESS|REJECT>"
+  "suggestAction": "<PROCESS|REJECT>",
+  "reasoning": "<brief explanation of what is detected in the image>"
 }
 
-Severity & Urgency Scoring Rules:
-- CRITICAL (85-100): Active fires, structural collapse, severe trauma, drowning, active violent crime, life-threatening disaster.
-- HIGH (65-84): Vehicular accidents with injuries, acute medical distress, deep flash flood, landslides blocking evacuation.
-- MEDIUM (40-64): Fallen trees, damaged roads, utility hazards, non-life-threatening property damage.
-- LOW (1-39): Minor debris, general inquiries, benign scenery, unclear submissions.
+Department Mapping:
+- Fire → BFP
+- Crime, Violence, Shooting, Disturbance → PNP
+- Medical Emergency, Cardiac, Unconscious → MEDICAL
+- Trauma, Severe Bleeding, Amputation → MEDICAL
+- Vehicular Accident, Collision → RESCUE
+- Flood, Water Inundation → RESCUE
+- Typhoon, Wind Damage, Fallen Tree → RESCUE
+- Landslide, Mudslide, Road Collapse → ENGINEERING
+- Unrecognized, Benign scenery, Meme, Non-emergency → UNKNOWN
 
-Rules:
-- If the image clearly shows an emergency → recognized: true, suggestAction: "PROCESS"
-- If the image is unclear, a selfie, random scenery, meme, or NOT an emergency → recognized: false, incidentType: "Unrecognized", severity: "LOW", urgencyScore: 10, suggestAction: "REJECT"
-- When in doubt, lean toward recognized: false and suggestAction: "REJECT" to prevent false alarms`;
+Severity & Urgency Scoring Rules:
+- CRITICAL (85-100): Active raging fires, violent armed crimes, catastrophic structural collapse, drowning, life-threatening disaster.
+- HIGH (65-84): Vehicular crashes with injury, deep flood waters, landslides on roads, acute medical emergencies.
+- MEDIUM (40-64): Downed utility poles, fallen trees blocking roads, minor structural damage.
+- LOW (1-39): Harmless situations, memes, random objects, benign landscapes, selfies.
+
+Strict Validation Rules:
+- If the image clearly depicts an actual disaster/emergency → recognized: true, suggestAction: "PROCESS"
+- If the image is a meme, selfie, random object, logo, food, pet, text screenshot, or harmless scenery → recognized: false, incidentType: "Unrecognized", recommendedDept: "UNKNOWN", severity: "LOW", urgencyScore: 10, suggestAction: "REJECT"
+- When in doubt, default to recognized: false and suggestAction: "REJECT" to prevent false alarms.`;
 
     const result = await model.generateContent([
       prompt,
-      { inlineData: { data: imageData, mimeType: "image/jpeg" } }
+      { inlineData: { data: imageData, mimeType } }
     ]);
 
     const text = result.response.text();
-    const jsonMatch = text.match(/\{.*\}/s);
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
     const parsed = jsonMatch ? JSON.parse(jsonMatch[0]) : JSON.parse(text);
 
     // Normalize the recognized flag

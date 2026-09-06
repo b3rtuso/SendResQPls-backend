@@ -182,7 +182,23 @@ export const getIncident = async (req: AuthRequest, res: Response) => {
       return res.status(403).json({ error: 'Access denied' });
     }
 
-    res.json(incident);
+    let isLockedByOther = false;
+    if (
+      req.user?.role === 'ADMIN' &&
+      incident.lockedByAdminId &&
+      incident.lockedByAdminId !== req.user.userId &&
+      incident.status !== 'RESOLVED' &&
+      incident.status !== 'REJECTED' &&
+      incident.lockedAt &&
+      (Date.now() - new Date(incident.lockedAt).getTime() < 3 * 60 * 1000)
+    ) {
+      isLockedByOther = true;
+    }
+
+    res.json({
+      ...incident,
+      isLockedByOther,
+    });
   } catch (error: any) {
     console.error("❌ GET incident error:", error.message);
     res.status(500).json({ error: "Failed to fetch incident" });
@@ -277,11 +293,11 @@ export const reportIncident = async (req: AuthRequest, res: Response) => {
 export const updateIncidentStatus = async (req: AuthRequest, res: Response) => {
   try {
     const { id } = req.params;
-    const { status, adminNotes, assignedDepartment, resolutionForm, severity, urgencyScore } = req.body;
+    const { status, adminNotes, assignedDepartment, resolutionForm, severity, urgencyScore, aiDetectedType } = req.body;
 
     const current = await prisma.incident.findUnique({
       where: { id },
-      select: { status: true, assignedDepartment: true, adminNotes: true },
+      select: { status: true, assignedDepartment: true, adminNotes: true, aiDetectedType: true },
     });
     if (!current) return res.status(404).json({ error: 'Incident not found' });
 
@@ -290,6 +306,7 @@ export const updateIncidentStatus = async (req: AuthRequest, res: Response) => {
     if (assignedDepartment !== undefined) data.assignedDepartment = assignedDepartment;
     if (severity) data.severity = severity;
     if (urgencyScore !== undefined) data.urgencyScore = parseInt(urgencyScore);
+    if (aiDetectedType !== undefined) data.aiDetectedType = aiDetectedType;
 
     // ── One-way status progression guard ─────────────────────────────────────
     if (status) {
@@ -313,6 +330,11 @@ export const updateIncidentStatus = async (req: AuthRequest, res: Response) => {
       }
 
       data.status = status;
+      if (status === 'RESOLVED' || status === 'REJECTED') {
+        data.lockedByAdminId = null;
+        data.lockedByAdminName = null;
+        data.lockedAt = null;
+      }
     }
     // ─────────────────────────────────────────────────────────────────────────
 
@@ -347,6 +369,16 @@ export const updateIncidentStatus = async (req: AuthRequest, res: Response) => {
       });
     }
 
+    if (aiDetectedType && current.aiDetectedType !== aiDetectedType) {
+      await prisma.incidentActivity.create({
+        data: {
+          incidentId: id,
+          title: `Incident reclassified as ${aiDetectedType}`,
+          type: 'ASSIGNED',
+        },
+      });
+    }
+
     const updated = await prisma.incident.update({
       where: { id },
       data,
@@ -372,6 +404,10 @@ export const updateIncidentStatus = async (req: AuthRequest, res: Response) => {
 
     // Broadcast SSE update to all active admin dispatcher sessions
     broadcastSseEvent('incident_updated', updated);
+
+    if (status === 'RESOLVED' || status === 'REJECTED') {
+      broadcastSseEvent('incident_unlocked', { incidentId: id });
+    }
 
     const actions = [];
     if (status) actions.push(`status → ${status}`);
@@ -441,7 +477,7 @@ export const updateIncidentStatus = async (req: AuthRequest, res: Response) => {
       }
     }
 
-    res.json({ message: `Incident updated`, updated });
+    res.json({ message: `Incident updated`, ...updated, updated });
   } catch (err: any) {
     console.error("❌ Update incident error:", err.message);
     res.status(500).json({ error: "Update failed", details: err.message });
@@ -513,3 +549,229 @@ export const testPushNotification = async (req: Request, res: Response) => {
     res.status(500).json({ error: err.message });
   }
 };
+
+// ── Incident Concurrency Lock Endpoints ────────────────────────────────────────
+
+const LOCK_TIMEOUT_MS = 3 * 60 * 1000; // 3-minute lease
+
+/**
+ * POST /api/incidents/:id/lock — Acquire dispatcher working lock
+ * Prevents multiple admins from colliding on the same emergency.
+ */
+export const lockIncident = async (req: AuthRequest, res: Response) => {
+  try {
+    const { id } = req.params;
+    const adminId = req.user!.userId;
+
+    const incident = await prisma.incident.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        status: true,
+        lockedByAdminId: true,
+        lockedByAdminName: true,
+        lockedAt: true,
+      },
+    });
+
+    if (!incident) {
+      return res.status(404).json({ error: 'Incident not found' });
+    }
+
+    // Finished incidents can be viewed by anyone without locks
+    if (incident.status === 'RESOLVED' || incident.status === 'REJECTED') {
+      return res.json({
+        success: true,
+        locked: false,
+        isDone: true,
+        status: incident.status,
+      });
+    }
+
+    // Check if actively locked by another admin within the last 3 minutes
+    const isLockedByOther = !!(
+      incident.lockedByAdminId &&
+      incident.lockedByAdminId !== adminId &&
+      incident.lockedAt &&
+      (Date.now() - new Date(incident.lockedAt).getTime() < LOCK_TIMEOUT_MS)
+    );
+
+    if (isLockedByOther) {
+      return res.status(423).json({
+        error: `${incident.lockedByAdminName || 'Another administrator'} is currently working on this incident.`,
+        lockedByAdminId: incident.lockedByAdminId,
+        lockedByAdminName: incident.lockedByAdminName,
+        lockedAt: incident.lockedAt,
+        status: incident.status,
+      });
+    }
+
+    // Acquire or renew lock
+    const adminUser = await prisma.user.findUnique({
+      where: { id: adminId },
+      select: { name: true },
+    });
+    const adminName = adminUser?.name || 'Admin';
+    const now = new Date();
+
+    const updated = await prisma.incident.update({
+      where: { id },
+      data: {
+        lockedByAdminId: adminId,
+        lockedByAdminName: adminName,
+        lockedAt: now,
+        // When an admin opens a PENDING incident, automatically transition to REVIEWING
+        status: incident.status === 'PENDING' ? 'REVIEWING' : incident.status,
+      },
+    });
+
+    broadcastSseEvent('incident_locked', {
+      incidentId: id,
+      lockedByAdminId: adminId,
+      lockedByAdminName: adminName,
+      lockedAt: now,
+      status: updated.status,
+    });
+
+    console.log(`🔒 Incident ${id} locked by ${adminName} (${adminId})`);
+    return res.json({
+      success: true,
+      locked: true,
+      lockedByAdminId: adminId,
+      lockedByAdminName: adminName,
+      lockedAt: now,
+      status: updated.status,
+    });
+  } catch (error: any) {
+    console.error('❌ lockIncident error:', error.message);
+    res.status(500).json({ error: 'Failed to acquire incident lock' });
+  }
+};
+
+/**
+ * POST /api/incidents/:id/heartbeat — Renew working lock lease
+ * Keeps the lock active while the admin is on the page.
+ */
+export const heartbeatIncident = async (req: AuthRequest, res: Response) => {
+  try {
+    const { id } = req.params;
+    const adminId = req.user!.userId;
+
+    const incident = await prisma.incident.findUnique({
+      where: { id },
+      select: { lockedByAdminId: true, status: true },
+    });
+
+    if (!incident) {
+      return res.status(404).json({ error: 'Incident not found' });
+    }
+
+    if (incident.status === 'RESOLVED' || incident.status === 'REJECTED') {
+      return res.json({ success: true, released: true });
+    }
+
+    // If another admin holds the lock, do not allow renewing
+    if (incident.lockedByAdminId && incident.lockedByAdminId !== adminId) {
+      return res.status(423).json({ error: 'Incident is locked by another admin' });
+    }
+
+    const now = new Date();
+    await prisma.incident.update({
+      where: { id },
+      data: { lockedAt: now },
+    });
+
+    return res.json({ success: true, lockedAt: now });
+  } catch (error: any) {
+    console.error('❌ heartbeatIncident error:', error.message);
+    res.status(500).json({ error: 'Failed to renew incident heartbeat' });
+  }
+};
+
+/**
+ * POST /api/incidents/:id/unlock — Release dispatcher working lock
+ * Called on page unload / navigation back to requests queue.
+ */
+export const unlockIncident = async (req: AuthRequest, res: Response) => {
+  try {
+    const { id } = req.params;
+    const adminId = req.user!.userId;
+
+    const incident = await prisma.incident.findUnique({
+      where: { id },
+      select: { lockedByAdminId: true },
+    });
+
+    if (!incident) {
+      return res.status(404).json({ error: 'Incident not found' });
+    }
+
+    // Only unlock if held by this admin (or if already null)
+    if (incident.lockedByAdminId === adminId) {
+      await prisma.incident.update({
+        where: { id },
+        data: {
+          lockedByAdminId: null,
+          lockedByAdminName: null,
+          lockedAt: null,
+        },
+      });
+
+      broadcastSseEvent('incident_unlocked', { incidentId: id });
+      console.log(`🔓 Incident ${id} unlocked by ${adminId}`);
+    }
+
+    return res.json({ success: true });
+  } catch (error: any) {
+    console.error('❌ unlockIncident error:', error.message);
+    res.status(500).json({ error: 'Failed to unlock incident' });
+  }
+};
+
+/**
+ * POST /api/incidents/:id/force-unlock — Force takeover by another admin
+ */
+export const forceUnlockIncident = async (req: AuthRequest, res: Response) => {
+  try {
+    const { id } = req.params;
+    const adminId = req.user!.userId;
+
+    const adminUser = await prisma.user.findUnique({
+      where: { id: adminId },
+      select: { name: true },
+    });
+    const adminName = adminUser?.name || 'Admin';
+    const now = new Date();
+
+    const updated = await prisma.incident.update({
+      where: { id },
+      data: {
+        lockedByAdminId: adminId,
+        lockedByAdminName: adminName,
+        lockedAt: now,
+      },
+    });
+
+    broadcastSseEvent('incident_locked', {
+      incidentId: id,
+      lockedByAdminId: adminId,
+      lockedByAdminName: adminName,
+      lockedAt: now,
+      status: updated.status,
+    });
+
+    console.log(`⚡ Incident ${id} force-taken-over by ${adminName} (${adminId})`);
+    return res.json({
+      success: true,
+      locked: true,
+      lockedByAdminId: adminId,
+      lockedByAdminName: adminName,
+      lockedAt: now,
+      status: updated.status,
+    });
+  } catch (error: any) {
+    console.error('❌ forceUnlockIncident error:', error.message);
+    res.status(500).json({ error: 'Failed to force takeover incident' });
+  }
+};
+
