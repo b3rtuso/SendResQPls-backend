@@ -212,7 +212,7 @@ export const reportIncident = async (req: AuthRequest, res: Response) => {
   try {
     // Take userId from verified JWT — never trust the body for identity
     const userId = req.user!.userId;
-    const { latitude, longitude } = req.body;
+    const { latitude, longitude, description } = req.body;
 
     if (!req.file) return res.status(400).json({ error: 'No image provided' });
 
@@ -228,6 +228,7 @@ export const reportIncident = async (req: AuthRequest, res: Response) => {
 
     const user = await prisma.user.findUnique({ where: { id: userId }, select: { name: true } });
     const reporterName = user?.name || 'Citizen';
+    const cleanDescription = description ? String(description).trim() : null;
 
     // ① Save incident to DB immediately with 'PENDING' status and placeholder AI fields.
     //    The worker will update these once AI classification finishes.
@@ -237,6 +238,7 @@ export const reportIncident = async (req: AuthRequest, res: Response) => {
         latitude: lat,
         longitude: lng,
         photoUrl: imageUrl,
+        description: cleanDescription,
         aiDetectedType: 'Processing...', // Worker will update this
         severity: 'MEDIUM',
         urgencyScore: 50,
@@ -244,6 +246,7 @@ export const reportIncident = async (req: AuthRequest, res: Response) => {
         activities: {
           create: {
             title: `Incident reported by ${reporterName} via mobile app`,
+            description: cleanDescription || undefined,
             type: 'REPORTED',
           },
         },

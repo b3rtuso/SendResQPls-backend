@@ -25,6 +25,7 @@ model Incident {
   latitude              Float       // From user's GPS
   longitude             Float       // From user's GPS
   photoUrl              String      // Required: The photo taken by the user
+  description           String?     // Optional situation description from citizen
   
   // AI Recommendations
   aiDetectedType        String?     // e.g., "Fire", "Flood", "Fallen Tree"
