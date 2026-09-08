@@ -256,6 +256,27 @@ export const reportIncident = async (req: AuthRequest, res: Response) => {
       },
     });
 
+    // 📡 Broadcast immediate SSE to admin web dashboard (<300ms)
+    // Dispatchers get instantaneous audio alert and banner without waiting 3-6s for Gemini AI
+    try {
+      broadcastSseEvent('new_incident', {
+        id: incident.id,
+        latitude: incident.latitude,
+        longitude: incident.longitude,
+        photoUrl: incident.photoUrl,
+        description: incident.description,
+        aiDetectedType: 'Emergency (Analyzing...)',
+        aiRecommendedDept: 'RESCUE',
+        severity: 'MEDIUM',
+        urgencyScore: 50,
+        status: 'PENDING',
+        createdAt: incident.createdAt,
+      });
+      console.log(`⚡ Immediate SSE broadcast sent for incident ${incident.id}`);
+    } catch (sseErr: any) {
+      console.warn('⚠️ Immediate SSE broadcast failed:', sseErr.message);
+    }
+
     // ② Enqueue the AI classification job — non-blocking, fires in the background
     try {
       await incidentQueue.add('classify', {
