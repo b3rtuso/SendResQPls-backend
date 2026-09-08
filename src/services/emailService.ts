@@ -1,4 +1,4 @@
-﻿import axios from 'axios';
+import axios from 'axios';
 import fs from 'fs';
 import path from 'path';
 
@@ -155,7 +155,7 @@ function renderEmailLayout(title: string, contentHtml: string): string {
 </html>`;
 }
 
-// â”€â”€â”€ Send helper â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ——— Send helper ————————————————————————————————————————————————————————————
 async function sendEmail(
   apiKey: string,
   senderName: string,
@@ -163,8 +163,9 @@ async function sendEmail(
   to: string,
   subject: string,
   htmlContent: string,
+  skipAttachments = false,
 ) {
-  const attachments = getEmailAttachments();
+  const attachments = skipAttachments ? undefined : getEmailAttachments();
   const payload: any = {
     sender: { name: senderName, email: senderEmail },
     to: [{ email: to }],
@@ -178,79 +179,94 @@ async function sendEmail(
   });
 }
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-// EMAIL 1 â€” Verification Code
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═══════════════════════════════════════════════════════════════════════════════
+// EMAIL 1 — Verification Code (Clean, Minimalist, 1-Minute Expiration)
+// ═══════════════════════════════════════════════════════════════════════════════
 export const sendVerificationEmail = async (to: string, code: string) => {
   const { apiKey, senderEmail } = getBrevoConfig();
   if (!apiKey) throw new Error('BREVO_API_KEY is missing');
 
-  const content = `
-    <div style="display:inline-block; background-color:#EEF2FF; color:#1A3FA3;
-                border:1px solid #C7D7FD; font-size:11px; font-weight:800;
-                padding:4px 12px; border-radius:99px; letter-spacing:0.8px;
-                text-transform:uppercase; margin-bottom:18px;">
-      Email Verification
-    </div>
+  const cleanHtml = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Verification Code</title>
+</head>
+<body style="margin:0; padding:0; background-color:#F8FAFC; font-family:-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; -webkit-font-smoothing:antialiased; color:#0F172A;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#F8FAFC; padding:36px 16px;">
+    <tr>
+      <td align="center">
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:440px; background-color:#FFFFFF; border-radius:16px; overflow:hidden; border:1px solid #E2E8F0; box-shadow:0 4px 16px rgba(10,25,49,0.06);">
+          <tr>
+            <td style="padding:28px 24px 8px; text-align:center;">
+              <div style="font-size:16px; font-weight:800; color:#0A1931; letter-spacing:0.5px; text-transform:uppercase;">
+                SendResQPls
+              </div>
+              <div style="font-size:11.5px; font-weight:600; color:#64748B; margin-top:2px;">
+                MDRRMO Balayan
+              </div>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:12px 28px 24px; text-align:center;">
+              <h2 style="margin:0 0 6px; color:#0A1931; font-size:20px; font-weight:800;">
+                Verification Code
+              </h2>
+              <p style="margin:0 0 20px; color:#64748B; font-size:13.5px; line-height:1.5;">
+                Enter this 6-digit code to verify your account:
+              </p>
 
-    <h2 style="margin:0 0 12px; color:#0A1931; font-size:22px; font-weight:800; line-height:1.25;">
-      Verify Your Account
-    </h2>
+              <!-- OTP Display Box -->
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:14px;">
+                <tr>
+                  <td style="background-color:#0F172A; border-radius:12px; padding:20px 16px; text-align:center;">
+                    <div style="font-size:42px; font-weight:800; letter-spacing:10px; color:#FFFFFF; font-family:'Courier New', Courier, monospace; padding-left:10px; line-height:1;">
+                      ${code}
+                    </div>
+                  </td>
+                </tr>
+              </table>
 
-    <p style="margin:0 0 24px; color:#475569; font-size:14px; line-height:1.65;">
-      Use the 6-digit code below to confirm your identity and complete sign-in or
-      registration on <strong style="color:#1A3FA3;">SendResQPls</strong>.
-    </p>
+              <!-- 1 Minute Expiration Notice -->
+              <p style="margin:0 0 16px; color:#DC2626; font-size:13px; font-weight:700;">
+                &#9203;&nbsp; This code expires in 1 minute
+              </p>
 
-    <!-- OTP Card -->
-    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:24px;">
-      <tr>
-        <td style="background-color:#0A1931;
-                   background-image:linear-gradient(135deg, #0A1931 0%, #1A3FA3 100%);
-                   border-radius:16px; padding:28px 20px; text-align:center;">
-          <div style="font-size:44px; font-weight:900; letter-spacing:14px; color:#FFFFFF;
-                      font-family:'Courier New', Courier, monospace; padding-left:14px; line-height:1;">
-            ${code}
-          </div>
-          <div style="margin-top:12px; font-size:11px; font-weight:700; color:#BFD4FF;
-                      letter-spacing:1px; text-transform:uppercase;">
-            &#9203;&nbsp; Expires in 10 minutes
-          </div>
-        </td>
-      </tr>
-    </table>
-
-    <!-- Security notice -->
-    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:20px;">
-      <tr>
-        <td style="background-color:#FFF5F5; border-left:4px solid #E5332A;
-                   border-radius:0 10px 10px 0; padding:13px 16px;">
-          <p style="margin:0; color:#7F1D1D; font-size:12.5px; line-height:1.55;">
-            <strong>Security Notice:</strong> Never share this code with anyone. MDRRMO staff and
-            dispatchers will never ask for your verification code.
-          </p>
-        </td>
-      </tr>
-    </table>
-
-    <p style="margin:0; color:#94A3B8; font-size:12px; line-height:1.5;">
-      If you did not initiate this request, you can safely ignore this email.
-    </p>
-  `;
+              <p style="margin:0; color:#94A3B8; font-size:11.5px; line-height:1.45;">
+                If you did not request this code, you can safely ignore this email.
+              </p>
+            </td>
+          </tr>
+          <tr>
+            <td style="background-color:#F8FAFC; border-top:1px solid #F1F5F9; padding:14px 24px; text-align:center;">
+              <p style="margin:0; font-size:11px; color:#94A3B8;">
+                &copy; 2026 MDRRMO Balayan &bull; SendResQPls
+              </p>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>`;
 
   try {
     await sendEmail(
       apiKey,
-      'MDRRMO Balayan System',
+      'SendResQPls',
       senderEmail,
       to,
-      `${code} â€” Your SendResQPls Verification Code`,
-      renderEmailLayout('Email Verification â€” SendResQPls', content),
+      `${code} is your SendResQPls verification code`,
+      cleanHtml,
+      true,
     );
   } catch (err: any) {
     throw new Error(err.response?.data?.message || err.message);
   }
 };
+
 
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 // EMAIL 2 â€” Incident Status Notification
