@@ -45,6 +45,10 @@ model Incident {
   lockedByAdminName     String?
   lockedAt              DateTime?
 
+  // Location Details (Reverse Geocoded on Ingest)
+  barangay              String?
+  formattedAddress      String?
+
   reporterId            String
   reporter              User            @relation(fields: [reporterId], references: [id])
   

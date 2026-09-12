@@ -51,18 +51,22 @@ const BALAYAN_BOUNDS = {
 // GET /api/incidents — List all incidents with optional search & status filter
 export const getIncidents = async (req: Request, res: Response) => {
   try {
-    const { search, status, from, to } = req.query;
+    const { search, status, from, to, page, limit, sortBy, sortDir } = req.query;
 
     const where: any = {};
 
     if (status && status !== 'ALL') {
-      where.status = status;
+      where.status = status as string;
     }
 
     if (search) {
+      const q = String(search).trim();
       where.OR = [
-        { aiDetectedType: { contains: search as string, mode: 'insensitive' } },
-        { id: { contains: search as string, mode: 'insensitive' } },
+        { aiDetectedType: { contains: q, mode: 'insensitive' } },
+        { id: { contains: q, mode: 'insensitive' } },
+        { barangay: { contains: q, mode: 'insensitive' } },
+        { formattedAddress: { contains: q, mode: 'insensitive' } },
+        { reporter: { name: { contains: q, mode: 'insensitive' } } },
       ];
     }
 
@@ -78,8 +82,8 @@ export const getIncidents = async (req: Request, res: Response) => {
       }
 
       const resDateCond: any = {};
-      if (from) resDateCond.gte = from;
-      if (to)   resDateCond.lte = to;
+      if (from) resDateCond.gte = String(from);
+      if (to)   resDateCond.lte = String(to);
       if (Object.keys(resDateCond).length > 0) {
         dateConditions.push({
           resolutionForm: {
@@ -93,6 +97,40 @@ export const getIncidents = async (req: Request, res: Response) => {
       }
     }
 
+    const orderField = (sortBy as string) || 'createdAt';
+    const orderDirection = (sortDir as string)?.toLowerCase() === 'asc' ? 'asc' : 'desc';
+
+    // If page parameter is supplied, return paginated payload with pagination metadata
+    if (page !== undefined) {
+      const pageNum = Math.max(1, parseInt(page as string) || 1);
+      const takeNum = Math.min(100, Math.max(1, parseInt(limit as string) || 12));
+      const skipNum = (pageNum - 1) * takeNum;
+
+      const [total, incidents] = await Promise.all([
+        prisma.incident.count({ where }),
+        prisma.incident.findMany({
+          where,
+          skip: skipNum,
+          take: takeNum,
+          include: {
+            reporter: { select: { id: true, name: true, email: true, phoneNumber: true, role: true } },
+            resolutionForm: true,
+            activities: { orderBy: { createdAt: 'asc' } },
+          },
+          orderBy: [{ [orderField]: orderDirection }, { createdAt: 'desc' }],
+        }),
+      ]);
+
+      return res.json({
+        data: incidents,
+        total,
+        page: pageNum,
+        limit: takeNum,
+        totalPages: Math.ceil(total / takeNum),
+      });
+    }
+
+    // Default: return full array (100% backward compatibility for dashboard/scripts)
     const incidents = await prisma.incident.findMany({
       where,
       include: {
@@ -100,7 +138,7 @@ export const getIncidents = async (req: Request, res: Response) => {
         resolutionForm: true,
         activities: { orderBy: { createdAt: 'asc' } },
       },
-      orderBy: { createdAt: 'desc' },  // newest first — dashboard recent incidents + admin list
+      orderBy: { createdAt: 'desc' },
     });
 
     res.json(incidents);
@@ -230,13 +268,19 @@ export const reportIncident = async (req: AuthRequest, res: Response) => {
     const reporterName = user?.name || 'Citizen';
     const cleanDescription = description ? String(description).trim() : null;
 
-    // ① Save incident to DB immediately with 'PENDING' status and placeholder AI fields.
-    //    The worker will update these once AI classification finishes.
+    // Reverse geocode barangay and formatted address on ingest (non-blocking fallback)
+    const geo = await performReverseGeocode(lat, lng).catch(() => null);
+    const resolvedBarangay = geo?.barangay || null;
+    const resolvedAddress = geo?.formattedAddress || null;
+
+    // ① Save incident to DB immediately with pre-computed location details and 'PENDING' status.
     const incident = await prisma.incident.create({
       data: {
         reporterId: userId,
         latitude: lat,
         longitude: lng,
+        barangay: resolvedBarangay,
+        formattedAddress: resolvedAddress,
         photoUrl: imageUrl,
         description: cleanDescription,
         aiDetectedType: 'Processing...', // Worker will update this
@@ -263,6 +307,8 @@ export const reportIncident = async (req: AuthRequest, res: Response) => {
         id: incident.id,
         latitude: incident.latitude,
         longitude: incident.longitude,
+        barangay: resolvedBarangay,
+        formattedAddress: resolvedAddress,
         photoUrl: incident.photoUrl,
         description: incident.description,
         aiDetectedType: 'Emergency (Analyzing...)',
@@ -270,6 +316,17 @@ export const reportIncident = async (req: AuthRequest, res: Response) => {
         severity: 'MEDIUM',
         urgencyScore: 50,
         status: 'PENDING',
+        createdAt: incident.createdAt,
+      });
+      broadcastSseEvent('incident_created', {
+        incidentId: incident.id,
+        status: 'PENDING',
+        barangay: resolvedBarangay,
+        formattedAddress: resolvedAddress,
+        latitude: lat,
+        longitude: lng,
+        photoUrl: imageUrl,
+        description: incident.description,
         createdAt: incident.createdAt,
       });
       console.log(`⚡ Immediate SSE broadcast sent for incident ${incident.id}`);
@@ -403,7 +460,7 @@ export const updateIncidentStatus = async (req: AuthRequest, res: Response) => {
       });
     }
 
-    const updated = await prisma.incident.update({
+    const updated: any = await prisma.incident.update({
       where: { id },
       data,
       include: { reporter: true, resolutionForm: true, activities: { orderBy: { createdAt: 'asc' } } },
@@ -505,6 +562,67 @@ export const updateIncidentStatus = async (req: AuthRequest, res: Response) => {
   } catch (err: any) {
     console.error("❌ Update incident error:", err.message);
     res.status(500).json({ error: "Update failed", details: err.message });
+  }
+};
+
+// PATCH /api/incidents/batch — Bulk assign or update status for multiple incidents
+export const batchUpdateIncidents = async (req: AuthRequest, res: Response) => {
+  try {
+    const { ids, status, assignedDepartment } = req.body;
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return res.status(400).json({ error: 'ids array required' });
+    }
+
+    const updateData: any = {};
+    if (status) updateData.status = status;
+    if (assignedDepartment) updateData.assignedDepartment = assignedDepartment;
+
+    const result = await prisma.incident.updateMany({
+      where: { id: { in: ids } },
+      data: updateData,
+    });
+
+    // Create activity logs for all updated incidents in parallel
+    const activityPromises = ids.map(incidentId => {
+      const activities: any[] = [];
+      if (assignedDepartment) {
+        activities.push(
+          prisma.incidentActivity.create({
+            data: {
+              incidentId,
+              title: `Batch assigned to ${assignedDepartment}`,
+              type: 'ASSIGNED',
+            },
+          })
+        );
+      }
+      if (status) {
+        activities.push(
+          prisma.incidentActivity.create({
+            data: {
+              incidentId,
+              title: `Batch status changed to ${status}`,
+              type: 'STATUS_CHANGE',
+            },
+          })
+        );
+      }
+      return Promise.all(activities);
+    });
+    await Promise.all(activityPromises).catch(() => {});
+
+    // Broadcast SSE event to all connected admin panels
+    broadcastSseEvent('incidents_batch_updated', {
+      ids,
+      status,
+      assignedDepartment,
+    });
+
+    console.log(`📦 Batch updated ${result.count} incidents with:`, updateData);
+    return res.json({ success: true, count: result.count });
+  } catch (error: any) {
+    console.error('❌ batchUpdateIncidents error:', error.message);
+    res.status(500).json({ error: 'Failed to batch update incidents' });
   }
 };
 

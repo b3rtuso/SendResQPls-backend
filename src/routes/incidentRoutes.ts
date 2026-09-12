@@ -8,6 +8,7 @@ import {
   getMyIncidents,
   reportIncident,
   updateIncidentStatus,
+  batchUpdateIncidents,
   reverseGeocode,
   addSseClient,
   removeSseClient,
@@ -63,6 +64,9 @@ router.get('/:id', requireAuth, getIncident);
 
 // Submit a new report — any authenticated user
 router.post('/report', requireAuth, upload.single('photo'), reportIncident);
+
+// Admin bulk actions (batch assign / status update) — must be before /:id/status
+router.patch('/batch', requireAdmin, batchUpdateIncidents);
 
 // Admin updates the situation
 router.patch('/:id/status', requireAdmin, updateIncidentStatus);

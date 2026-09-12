@@ -91,7 +91,7 @@ export const runAIAnalysis = async (imageUrl: string) => {
     } else if (imageUrl.startsWith("http://") || imageUrl.startsWith("https://")) {
       const imageResponse = await axios.get(imageUrl, { responseType: "arraybuffer" });
       const contentType = imageResponse.headers["content-type"];
-      if (contentType) mimeType = contentType;
+      if (contentType) mimeType = String(contentType);
       imageData = Buffer.from(imageResponse.data).toString("base64");
     } else {
       const fs = await import("fs/promises");

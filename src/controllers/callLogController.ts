@@ -65,7 +65,7 @@ export const createCallLog = async (req: AuthRequest, res: Response) => {
       return res.status(400).json({ error: 'Department and contact phone number are required' });
     }
 
-    const caller = callerName || req.user?.name || 'MDRRMO Dispatcher';
+    const caller = callerName || (req.user as any)?.name || 'MDRRMO Dispatcher';
 
     const log = await prisma.callLog.create({
       data: {

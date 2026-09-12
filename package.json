@@ -5,10 +5,10 @@
   "main": "src/server.ts",
   "scripts": {
     "dev": "tsx watch src/server.ts",
-    "build": "prisma generate && prisma db push",
+    "build": "prisma generate && prisma db push --accept-data-loss",
     "start": "tsx src/server.ts",
     "db:generate": "npx prisma generate",
-    "db:push": "npx prisma db push",
+    "db:push": "npx prisma db push --accept-data-loss",
     "db:studio": "npx prisma studio"
   },
   "dependencies": {
@@ -20,6 +20,7 @@
     "bullmq": "^6.0.5",
     "cloudinary": "^1.41.3",
     "cors": "^2.8.6",
+    "docxtemplater": "^3.69.3",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
     "express-rate-limit": "^8.6.0",
@@ -30,6 +31,7 @@
     "multer": "^2.1.1",
     "multer-storage-cloudinary": "^4.0.0",
     "pg": "^8.20.0",
+    "pizzip": "^3.2.0",
     "prisma": "^7.8.0",
     "tsx": "^4.21.0",
     "validator": "^13.15.35"

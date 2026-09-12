@@ -59,7 +59,7 @@ const BARANGAYS: BarangayCoord[] = [
 
 const cache = new Map<string, { barangay: string; formattedAddress: string }>();
 
-function getNearestBarangay(lat: number, lng: number): string {
+export function getNearestBarangay(lat: number, lng: number): string {
   const toRad = (d: number) => (d * Math.PI) / 180;
   let nearest = BARANGAYS[0];
   let minDist = Infinity;

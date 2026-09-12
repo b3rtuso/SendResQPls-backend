@@ -7,6 +7,8 @@ import incidentRoutes from './routes/incidentRoutes';
 import authRoutes from './routes/authRoutes';
 import departmentRoutes from './routes/departmentRoutes';
 import callLogRoutes from './routes/callLogRoutes';
+import reportRoutes from './routes/reportRoutes';
+import analyticsRoutes from './routes/analyticsRoutes';
 import { incidentWorker } from './queues/incidentQueue'; // Start background AI worker
 
 import { prisma } from './config/db';
@@ -95,6 +97,8 @@ app.use('/api/incidents', incidentRoutes);
 app.use('/api/incidents/create', reportLimiter); // tighter limit for new report submissions
 app.use('/api/departments', departmentRoutes);
 app.use('/api/call-logs', callLogRoutes);
+app.use('/api/reports', reportRoutes);
+app.use('/api/analytics', analyticsRoutes);
 
 // Auto-seed default MDRRMO admin on startup if no admin exists in the database
 async function seedDefaultAdmin() {
