@@ -48,13 +48,42 @@ export async function processIncidentDirectly(
   const aiRecognized: boolean = assessment.recognized ?? isRecognizedIncident(assessment.incidentType);
   const aiConfidence: string = assessment.confidence || (aiRecognized ? 'medium' : 'low');
 
-  // Map AI suggestion to a valid Department enum value
-  let recommended: any = 'RESCUE';
-  const aiSuggestion = (assessment.recommendedDept || '').toUpperCase();
-  if (aiSuggestion.includes('FIRE') || aiSuggestion.includes('BFP')) recommended = 'BFP';
-  else if (aiSuggestion.includes('POLICE') || aiSuggestion.includes('PNP')) recommended = 'PNP';
-  else if (aiSuggestion.includes('MEDICAL') || aiSuggestion.includes('AMBULANCE')) recommended = 'MEDICAL';
-  else if (aiSuggestion.includes('ENGINEERING') || aiSuggestion.includes('ROAD')) recommended = 'ENGINEERING';
+  // Dynamically resolve AI suggestion against all registered departments in the database
+  let recommended = 'RESCUE';
+  try {
+    const allDepts = await prisma.departmentInfo.findMany({ select: { name: true, fullName: true } });
+    const aiSuggestion = (assessment.recommendedDept || '').toUpperCase();
+    const incType = (assessment.incidentType || '').toUpperCase();
+
+    if (allDepts.length > 0) {
+      // 1. Direct match on code
+      const exact = allDepts.find(d => d.name.toUpperCase() === aiSuggestion);
+      if (exact) {
+        recommended = exact.name;
+      } else {
+        // 2. Match against full name or incident keywords
+        const matched = allDepts.find(d => {
+          const n = d.name.toUpperCase();
+          const fn = (d.fullName || '').toUpperCase();
+          if ((aiSuggestion.includes('FIRE') || incType.includes('FIRE')) && (n.includes('BFP') || fn.includes('FIRE'))) return true;
+          if ((aiSuggestion.includes('POLICE') || incType.includes('CRIME') || incType.includes('SHOOTING')) && (n.includes('PNP') || fn.includes('POLICE'))) return true;
+          if ((aiSuggestion.includes('MEDIC') || aiSuggestion.includes('AMBULANCE') || incType.includes('MEDIC') || incType.includes('TRAUMA')) && (n.includes('MEDIC') || fn.includes('HEALTH') || fn.includes('AMBULANCE'))) return true;
+          if ((aiSuggestion.includes('ENGINEER') || aiSuggestion.includes('ROAD') || incType.includes('COLLAPSE') || incType.includes('TREE')) && (n.includes('ENGINEER') || fn.includes('ENGINEER') || fn.includes('PUBLIC WORKS'))) return true;
+          if ((aiSuggestion.includes('COAST') || incType.includes('DROWN') || incType.includes('SEA')) && (n.includes('COAST') || n.includes('PCG') || fn.includes('COAST GUARD'))) return true;
+          return aiSuggestion.includes(n) || (aiSuggestion.length > 2 && fn.includes(aiSuggestion));
+        });
+        if (matched) {
+          recommended = matched.name;
+        } else {
+          const rescueDept = allDepts.find(d => d.name.toUpperCase().includes('RESCUE'));
+          recommended = rescueDept ? rescueDept.name : allDepts[0].name;
+        }
+      }
+    }
+  } catch (deptErr: any) {
+    console.warn('⚠️ Dynamic department matching fallback:', deptErr.message);
+    recommended = 'RESCUE';
+  }
 
   const finalStatus = aiRecognized ? 'PENDING' : 'REVIEWING';
 

@@ -29,10 +29,10 @@ model Incident {
   
   // AI Recommendations
   aiDetectedType        String?     // e.g., "Fire", "Flood", "Fallen Tree"
-  aiRecommendedDept     Department? // e.g., BFP, PNP, Engineering
+  aiRecommendedDept     String?     // e.g., BFP, PNP, Engineering, or any future department
   
   // Admin Actions
-  assignedDepartment    Department? // The final decision made by the admin
+  assignedDepartment    String?     // The final decision made by the admin
   status                Status      @default(PENDING)
   adminNotes            String?     // Notes added by the MDRRMO dispatcher
   
