@@ -45,7 +45,11 @@ export async function processIncidentDirectly(
 
   // ── 1. Run AI classification ───────────────────────────────────────────────
   const assessment = await runAIAnalysis(imageUrl);
-  const aiRecognized: boolean = assessment.recognized ?? isRecognizedIncident(assessment.incidentType);
+  const rawConfidence: string = (assessment.confidence || '').toLowerCase();
+  const isLowConfidence: boolean = rawConfidence === 'low';
+  // Treat incident as recognized ONLY if recognized flag is true AND confidence is NOT low
+  const baseRecognized: boolean = assessment.recognized ?? isRecognizedIncident(assessment.incidentType);
+  const aiRecognized: boolean = baseRecognized && !isLowConfidence;
   const aiConfidence: string = assessment.confidence || (aiRecognized ? 'medium' : 'low');
 
   // Dynamically resolve AI suggestion against all registered departments in the database
@@ -88,17 +92,21 @@ export async function processIncidentDirectly(
   const finalStatus = aiRecognized ? 'PENDING' : 'REVIEWING';
 
   // ── 2. Update the incident record with AI results ─────────────────────────
+  const adminNoteMsg = aiRecognized
+    ? undefined
+    : isLowConfidence
+      ? `⚠️ AI had low confidence in recognizing this incident (type: ${assessment.incidentType}, confidence: low). Admin review required.`
+      : `⚠️ AI could not recognize this incident (confidence: ${aiConfidence}). Admin review required.`;
+
   const incident = await prisma.incident.update({
     where: { id: incidentId },
     data: {
-      aiDetectedType: assessment.incidentType,
+      aiDetectedType: isLowConfidence ? `${assessment.incidentType} (Low Confidence)` : assessment.incidentType,
       aiRecommendedDept: aiRecognized ? recommended : undefined,
       severity: assessment.severity || 'MEDIUM',
       urgencyScore: assessment.urgencyScore || 50,
       status: finalStatus,
-      adminNotes: aiRecognized
-        ? undefined
-        : `⚠️ AI could not recognize this incident (confidence: ${aiConfidence}). Admin review required.`,
+      adminNotes: adminNoteMsg,
     },
   });
 
@@ -225,7 +233,7 @@ export async function processIncidentDirectly(
     } else {
       broadcastSseEvent('unrecognized_incident', {
         id: incident.id,
-        aiDetectedType: assessment.incidentType,
+        aiDetectedType: isLowConfidence ? `${assessment.incidentType} (Low Confidence)` : assessment.incidentType,
         aiConfidence,
         severity: assessment.severity || 'LOW',
         urgencyScore: assessment.urgencyScore || 20,
@@ -253,7 +261,11 @@ export const incidentWorker = new Worker<IncidentJobData>(
   },
   {
     connection: redis,
-    concurrency: 5,
+    concurrency: 3,           // 3 concurrent jobs (safe balance)
+    limiter: {
+      max: 12,                // Max 12 requests per minute (Gemini free tier quota is 15 RPM)
+      duration: 60000,
+    },
     drainDelay: 30000,        // Wait 30s when queue is empty instead of tight polling
     stalledInterval: 120000,  // Check stalled jobs every 2 min
     lockDuration: 60000,      // 60s lock for long Gemini vision queries

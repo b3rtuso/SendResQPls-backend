@@ -140,10 +140,25 @@ Strict Validation Rules:
 - If the image is a meme, selfie, random object, logo, food, pet, text screenshot, or harmless scenery → recognized: false, incidentType: "Unrecognized", recommendedDept: "UNKNOWN", severity: "LOW", urgencyScore: 10, suggestAction: "REJECT"
 - When in doubt, default to recognized: false and suggestAction: "REJECT" to prevent false alarms.`;
 
-    const result = await model.generateContent([
-      prompt,
-      { inlineData: { data: imageData, mimeType } }
-    ]);
+    let attempts = 0;
+    let result: any = null;
+    while (attempts < 2) {
+      try {
+        result = await model.generateContent([
+          prompt,
+          { inlineData: { data: imageData, mimeType } }
+        ]);
+        break;
+      } catch (genErr: any) {
+        attempts++;
+        const errMsg = (genErr.message || '').toLowerCase();
+        if (attempts >= 2 || (!errMsg.includes('429') && !errMsg.includes('quota') && !errMsg.includes('resource_exhausted'))) {
+          throw genErr;
+        }
+        console.warn(`⚠️ Gemini rate limit hit, backing off 2.5s before retry (attempt ${attempts})...`);
+        await new Promise(r => setTimeout(r, 2500));
+      }
+    }
 
     const text = result.response.text();
     const jsonMatch = text.match(/\{[\s\S]*\}/);

@@ -78,26 +78,38 @@ export function getNearestBarangay(lat: number, lng: number): string {
   return `${nearest.name}, Balayan, Batangas`;
 }
 
+/**
+ * Instant local barangay resolver for Balayan, Batangas.
+ * Runs entirely in-memory using Haversine algorithm (< 0.1ms latency).
+ * Guaranteed to succeed without external network dependency.
+ */
+export function resolveLocalBarangay(lat: number, lng: number): { barangay: string; formattedAddress: string } {
+  const local = getNearestBarangay(lat, lng);
+  const barangay = local.split(',')[0].trim();
+  return {
+    barangay,
+    formattedAddress: local,
+  };
+}
+
 export async function performReverseGeocode(lat: number, lng: number): Promise<{ barangay: string; formattedAddress: string; source: string }> {
   const cacheKey = `${lat.toFixed(5)},${lng.toFixed(5)}`;
   if (cache.has(cacheKey)) {
     return { ...cache.get(cacheKey)!, source: 'cache' };
   }
 
-  // Fallback: Haversine
-  const localFallback = getNearestBarangay(lat, lng);
-  const fallbackResult = {
-    barangay: localFallback.split(',')[0],
-    formattedAddress: localFallback,
-  };
+  // Fast baseline: Instant local Haversine resolution
+  const fallbackResult = resolveLocalBarangay(lat, lng);
 
-  const googleApiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_MAPS_API_KEY;
+  // ONLY use Google Maps if an actual Google Maps API key is explicitly configured
+  // (NEVER use GEMINI_API_KEY as a fallback — it causes an immediate 400 error & 5-second hang)
+  const googleApiKey = process.env.GOOGLE_MAPS_API_KEY;
 
-  // 1. Try Google Maps Geocoding API if key is present
-  if (googleApiKey) {
+  // 1. Try Google Maps Geocoding API ONLY if dedicated key is provided
+  if (googleApiKey && googleApiKey.trim() !== '') {
     try {
       const url = `https://maps.googleapis.com/maps/api/geocode/json?latlng=${lat},${lng}&key=${googleApiKey}`;
-      const response = await axios.get(url, { timeout: 5000 });
+      const response = await axios.get(url, { timeout: 1500 });
       const data = response.data;
       if (data && data.status === 'OK' && data.results && data.results.length > 0) {
         let barangayName = '';
@@ -126,9 +138,7 @@ export async function performReverseGeocode(lat: number, lng: number): Promise<{
           }
         }
 
-        // Clean up barangay name (e.g. remove "Barangay" prefix or suffix if it exists, or standardize)
         if (barangayName) {
-          // If it matched gumamela or dilao, make sure we format it nicely
           const formattedAddress = firstResult.formatted_address || `${barangayName}, Balayan, Batangas`;
           const result = { barangay: barangayName, formattedAddress };
           cache.set(cacheKey, result);
@@ -136,15 +146,15 @@ export async function performReverseGeocode(lat: number, lng: number): Promise<{
         }
       }
     } catch (err: any) {
-      console.warn(`[Geocoding] Google Maps API failed, falling back to OSM: ${err.message}`);
+      console.warn(`[Geocoding] Google Maps API failed: ${err.message}`);
     }
   }
 
-  // 2. Try OpenStreetMap Nominatim API
+  // 2. Try OpenStreetMap Nominatim API (low timeout to avoid holding ingest)
   try {
     const url = `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json&accept-language=en`;
     const response = await axios.get(url, {
-      timeout: 5000,
+      timeout: 1500,
       headers: {
         'User-Agent': 'DisasterIncidentReportingSystem/1.0',
       },

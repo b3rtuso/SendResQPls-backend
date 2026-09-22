@@ -13,7 +13,15 @@ const storage = new CloudinaryStorage({
   params: async () => ({
     folder: 'disaster-reports',
     allowed_formats: ['jpg', 'png', 'jpeg', 'webp'],
+    transformation: [
+      { width: 1600, height: 1600, crop: 'limit', quality: 'auto:good', fetch_format: 'auto' }
+    ],
   }),
 });
 
-export const upload = multer({ storage });
+export const upload = multer({
+  storage,
+  limits: {
+    fileSize: 15 * 1024 * 1024, // 15MB hard ceiling
+  },
+});

@@ -2,7 +2,7 @@ import { Request, Response } from 'express';
 import { prisma } from '../config/db';
 import { runAIAnalysis, isRecognizedIncident } from '../services/aiService';
 import { sendStatusNotification } from '../services/emailService';
-import { performReverseGeocode } from '../services/geocodingService';
+import { performReverseGeocode, resolveLocalBarangay } from '../services/geocodingService';
 import { syncDepartmentStatuses } from './departmentController';
 import { messaging } from '../config/firebase';
 import { AuthRequest } from '../middleware/auth';
@@ -268,10 +268,10 @@ export const reportIncident = async (req: AuthRequest, res: Response) => {
     const reporterName = user?.name || 'Citizen';
     const cleanDescription = description ? String(description).trim() : null;
 
-    // Reverse geocode barangay and formatted address on ingest (non-blocking fallback)
-    const geo = await performReverseGeocode(lat, lng).catch(() => null);
-    const resolvedBarangay = geo?.barangay || null;
-    const resolvedAddress = geo?.formattedAddress || null;
+    // Instant local reverse geocode for Balayan municipality (< 0.1ms latency, 0s delay)
+    const localGeo = resolveLocalBarangay(lat, lng);
+    const resolvedBarangay = localGeo.barangay;
+    const resolvedAddress = localGeo.formattedAddress;
 
     // ① Save incident to DB immediately with pre-computed location details and 'PENDING' status.
     const incident = await prisma.incident.create({
