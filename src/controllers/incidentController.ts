@@ -535,7 +535,7 @@ export const updateIncidentStatus = async (req: AuthRequest, res: Response) => {
               body,
             },
             data: {
-              incidentId: id,
+              incidentId: String(id),
               status: status || updated.status,
               department: assignedDepartment || updated.assignedDepartment || '',
             },

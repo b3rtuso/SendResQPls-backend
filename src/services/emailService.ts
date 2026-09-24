@@ -37,18 +37,17 @@ function getEmailAttachments() {
   return [{ content: logoBase64, name: 'logo.jpg' }];
 }
 
-// â”€â”€â”€ Master Email Layout â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+const LOGO_PUBLIC_URL = 'https://sendresqpls-mobile.vercel.app/logo.jpg';
+
+// ——— Master Email Layout ——————————————————————————————————————————————————
 // Brand palette from the SRQ logo:
-//   Royal blue  â†’ #1A3FA3
-//   Brand red   â†’ #E5332A
-//   Dark navy   â†’ #0A1931
+//   Royal blue  → #1A3FA3
+//   Brand red   → #E5332A
+//   Dark navy   → #0A1931
 function renderEmailLayout(title: string, contentHtml: string): string {
-  const logoBase64 = getLogoBase64();
-  const logoTag = logoBase64
-    ? `<img src="cid:logo.jpg" alt="SendResQPls Logo" width="76" height="76"
-         style="display:block; border-radius:14px; border:3px solid #FFFFFF;
-                box-shadow:0 4px 16px rgba(0,0,0,0.35); object-fit:cover;" />`
-    : '';
+  const logoTag = `<img src="${LOGO_PUBLIC_URL}" alt="SendResQPls Logo" width="76" height="76"
+         style="display:block; margin:0 auto; border-radius:14px; border:3px solid #FFFFFF;
+                box-shadow:0 4px 16px rgba(0,0,0,0.35); object-fit:cover;" />`;
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -200,6 +199,9 @@ export const sendVerificationEmail = async (to: string, code: string) => {
         <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:440px; background-color:#FFFFFF; border-radius:16px; overflow:hidden; border:1px solid #E2E8F0; box-shadow:0 4px 16px rgba(10,25,49,0.06);">
           <tr>
             <td style="padding:28px 24px 8px; text-align:center;">
+              <div style="margin-bottom:12px;">
+                <img src="${LOGO_PUBLIC_URL}" alt="SendResQPls" width="54" height="54" style="display:inline-block; border-radius:12px; border:2px solid #E2E8F0; object-fit:cover;" />
+              </div>
               <div style="font-size:16px; font-weight:800; color:#0A1931; letter-spacing:0.5px; text-transform:uppercase;">
                 SendResQPls
               </div>
@@ -403,70 +405,103 @@ export const sendPasswordResetEmail = async (to: string, name: string, resetUrl:
   const { apiKey, senderEmail } = getBrevoConfig();
   if (!apiKey) throw new Error('BREVO_API_KEY is missing');
 
-  const content = `
-    <div style="display:inline-block; background-color:#FFF5F5; color:#C0392B;
-                border:1px solid #FECACA; font-size:11px; font-weight:800;
-                padding:4px 12px; border-radius:99px; letter-spacing:0.8px;
-                text-transform:uppercase; margin-bottom:18px;">
-      Account Security
-    </div>
+  const cleanHtml = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Reset Your Password</title>
+</head>
+<body style="margin:0; padding:0; background-color:#F8FAFC; font-family:-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; -webkit-font-smoothing:antialiased; color:#0F172A;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#F8FAFC; padding:36px 16px;">
+    <tr>
+      <td align="center">
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:440px; background-color:#FFFFFF; border-radius:16px; overflow:hidden; border:1px solid #E2E8F0; box-shadow:0 4px 16px rgba(10,25,49,0.06);">
+          <tr>
+            <td style="padding:28px 24px 8px; text-align:center;">
+              <div style="margin-bottom:12px;">
+                <img src="${LOGO_PUBLIC_URL}" alt="SendResQPls" width="54" height="54" style="display:inline-block; border-radius:12px; border:2px solid #E2E8F0; object-fit:cover;" />
+              </div>
+              <div style="font-size:16px; font-weight:800; color:#0A1931; letter-spacing:0.5px; text-transform:uppercase;">
+                SendResQPls
+              </div>
+              <div style="font-size:11.5px; font-weight:600; color:#64748B; margin-top:2px;">
+                MDRRMO Balayan
+              </div>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:12px 28px 24px; text-align:center;">
+              <h2 style="margin:0 0 8px; color:#0A1931; font-size:20px; font-weight:800;">
+                Reset Your Password
+              </h2>
+              <p style="margin:0 0 6px; color:#475569; font-size:13.5px; line-height:1.5;">
+                Hello <strong style="color:#0A1931;">${name || 'Citizen'}</strong>,
+              </p>
+              <p style="margin:0 0 22px; color:#64748B; font-size:13px; line-height:1.55;">
+                We received a request to reset your SendResQPls account password. Click the button below to choose a new password:
+              </p>
 
-    <h2 style="margin:0 0 12px; color:#0A1931; font-size:22px; font-weight:800; line-height:1.25;">
-      Password Reset Request
-    </h2>
+              <!-- CTA Button -->
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:20px;">
+                <tr>
+                  <td align="center">
+                    <a href="${resetUrl}"
+                       target="_blank"
+                       style="display:inline-block; background-color:#1D4ED8;
+                              background-image:linear-gradient(135deg, #2563EB 0%, #1D4ED8 100%);
+                              color:#FFFFFF; padding:14px 32px; border-radius:12px;
+                              text-decoration:none; font-weight:700; font-size:14px;
+                              letter-spacing:0.2px; box-shadow:0 4px 14px rgba(29,78,216,0.3);">
+                      Reset My Password
+                    </a>
+                  </td>
+                </tr>
+              </table>
 
-    <p style="margin:0 0 8px; color:#475569; font-size:14px; line-height:1.65;">
-      Hello <strong style="color:#0A1931;">${name}</strong>,
-    </p>
-    <p style="margin:0 0 28px; color:#475569; font-size:14px; line-height:1.65;">
-      We received a request to reset the password for your
-      <strong style="color:#1A3FA3;">SendResQPls</strong> account.
-      Click the button below to set a new secure password:
-    </p>
+              <!-- 30 Minute Expiration Notice -->
+              <p style="margin:0 0 16px; color:#DC2626; font-size:12.5px; font-weight:700;">
+                &#9203;&nbsp; This link expires in 30 minutes
+              </p>
 
-    <!-- CTA -->
-    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:28px;">
-      <tr>
-        <td align="center">
-          <a href="${resetUrl}"
-             style="display:inline-block; background-color:#E5332A;
-                    background-image:linear-gradient(135deg, #C0392B 0%, #E5332A 100%);
-                    color:#FFFFFF; padding:15px 40px; border-radius:12px;
-                    text-decoration:none; font-weight:800; font-size:14px;
-                    letter-spacing:0.3px; box-shadow:0 6px 18px rgba(229,51,42,0.35);">
-            Reset My Password
-          </a>
-        </td>
-      </tr>
-    </table>
+              <p style="margin:0 0 16px; color:#94A3B8; font-size:11.5px; line-height:1.45;">
+                If you did not request a password reset, you can safely ignore this email &mdash; your account remains secure.
+              </p>
 
-    <!-- Warning -->
-    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:20px;">
-      <tr>
-        <td style="background-color:#FFFBEB; border-left:4px solid #F59E0B;
-                   border-radius:0 10px 10px 0; padding:13px 16px;">
-          <p style="margin:0; color:#92400E; font-size:12.5px; line-height:1.55;">
-            <strong>Important:</strong> This link expires in 30 minutes. If you did not request a
-            password reset, please ignore this email â€” your account remains secure.
-          </p>
-        </td>
-      </tr>
-    </table>
-
-    <p style="margin:0; color:#94A3B8; font-size:11.5px; line-height:1.5;">
-      If the button doesn't work, copy and paste this link into your browser:<br />
-      <a href="${resetUrl}" style="color:#1A3FA3; word-break:break-all; font-size:11px;">${resetUrl}</a>
-    </p>
-  `;
+              <!-- Fallback Link -->
+              <div style="border-top:1px solid #F1F5F9; padding-top:14px; text-align:left;">
+                <p style="margin:0 0 4px; color:#94A3B8; font-size:11px;">
+                  Button not working? Copy and paste this URL into your browser:
+                </p>
+                <a href="${resetUrl}" style="color:#1D4ED8; font-size:11px; word-break:break-all; text-decoration:underline;">
+                  ${resetUrl}
+                </a>
+              </div>
+            </td>
+          </tr>
+          <tr>
+            <td style="background-color:#F8FAFC; border-top:1px solid #F1F5F9; padding:14px 24px; text-align:center;">
+              <p style="margin:0; font-size:11px; color:#94A3B8;">
+                &copy; 2026 MDRRMO Balayan &bull; SendResQPls
+              </p>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>`;
 
   try {
     await sendEmail(
       apiKey,
-      'MDRRMO Balayan Security',
+      'SendResQPls',
       senderEmail,
       to,
       'Reset Your SendResQPls Password',
-      renderEmailLayout('Password Reset â€” SendResQPls', content),
+      cleanHtml,
+      true,
     );
   } catch (err: any) {
     throw new Error(err.response?.data?.message || err.message);

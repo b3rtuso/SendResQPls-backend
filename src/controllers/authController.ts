@@ -295,7 +295,8 @@ export const forgotPassword = async (req: Request, res: Response) => {
     await redis.set(`pwd_reset:${token}`, user.email, 'EX', 30 * 60);
 
     // Build reset URL — uses the app's frontend URL
-    const resetUrl = `${process.env.FRONTEND_URL || 'http://localhost:5173'}/mobile/reset-password?token=${token}`;
+    const baseUrl = (process.env.FRONTEND_URL || 'https://sendresqpls-mobile.vercel.app').replace(/\/+$/, '');
+    const resetUrl = `${baseUrl}/mobile/reset-password?token=${token}`;
 
     await sendPasswordResetEmail(user.email, user.name, resetUrl);
     console.log(`📧 Password reset link sent to ${user.email}`);
