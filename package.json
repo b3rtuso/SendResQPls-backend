@@ -7,6 +7,7 @@
     "dev": "tsx watch src/server.ts",
     "build": "prisma generate && prisma db push --accept-data-loss",
     "start": "tsx src/server.ts",
+    "check-env": "tsx src/scripts/checkEnv.ts",
     "db:generate": "npx prisma generate",
     "db:push": "npx prisma db push --accept-data-loss",
     "db:studio": "npx prisma studio"
