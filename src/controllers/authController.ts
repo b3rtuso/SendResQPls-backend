@@ -4,8 +4,8 @@ import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
 import { sendVerificationEmail, sendPasswordResetEmail } from '../services/emailService';
 import { AuthRequest } from '../middleware/auth';
-import { redis } from '../config/redis';
 import { validatePhilippineMobile, validatePassword } from '../utils/validators';
+import { redis } from '../config/redis';
 
 // ── JWT Secret — crash immediately on startup if not configured ───────────────
 const JWT_SECRET = process.env.JWT_SECRET;
@@ -16,6 +16,9 @@ if (!JWT_SECRET) {
 // ── In-memory store for email verification codes ──────────────────────────────
 // (verification codes are short-lived and low-risk — in-memory is fine here)
 const verificationCodes = new Map<string, { code: string; expiresAt: number }>();
+
+// ── In-memory fallback for password reset tokens when Redis is not configured ──
+const memoryPasswordResetTokens = new Map<string, { email: string; expiresAt: number }>();
 
 // POST /api/auth/send-code — Send verification code to email
 export const sendCode = async (req: Request, res: Response) => {
@@ -323,8 +326,15 @@ export const forgotPassword = async (req: Request, res: Response) => {
     // Generate a secure random token
     const token = Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
 
-    // Store in Redis with 30-minute TTL — survives server restarts unlike in-memory Map
-    await redis.set(`pwd_reset:${token}`, user.email, 'EX', 30 * 60);
+    // Store in Redis (survives restarts) or fallback to in-memory store
+    if (redis) {
+      await redis.set(`pwd_reset:${token}`, user.email, 'EX', 30 * 60);
+    } else {
+      memoryPasswordResetTokens.set(token, {
+        email: user.email,
+        expiresAt: Date.now() + 30 * 60 * 1000,
+      });
+    }
 
     // Build reset URL — uses sanitized single mobile URL to completely bypass any stale cached /mobile redirects
     const baseUrl = getMobileAppUrl();
@@ -350,8 +360,17 @@ export const resetPassword = async (req: Request, res: Response) => {
       return res.status(400).json({ error: passCheck.error });
     }
 
-    // Fetch email from Redis (auto-expires after 30 min)
-    const email = await redis.get(`pwd_reset:${token}`);
+    // Fetch email from Redis or in-memory fallback
+    let email: string | null = null;
+    if (redis) {
+      email = await redis.get(`pwd_reset:${token}`);
+    } else {
+      const record = memoryPasswordResetTokens.get(token);
+      if (record && record.expiresAt > Date.now()) {
+        email = record.email;
+      }
+    }
+
     if (!email) return res.status(400).json({ error: 'Invalid or expired reset link. Please request a new one.' });
 
     const newHash = await bcrypt.hash(newPassword, 10);
@@ -361,7 +380,12 @@ export const resetPassword = async (req: Request, res: Response) => {
     });
 
     // Delete the token immediately — one-time use
-    await redis.del(`pwd_reset:${token}`);
+    if (redis) {
+      await redis.del(`pwd_reset:${token}`);
+    } else {
+      memoryPasswordResetTokens.delete(token);
+    }
+
     res.json({ message: 'Password reset successfully. You can now log in.' });
   } catch (error: any) {
     console.error('❌ Reset password error:', error.message);

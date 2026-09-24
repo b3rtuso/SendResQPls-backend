@@ -19,15 +19,17 @@ export interface IncidentJobData {
  * incidentQueue — incoming jobs are enqueued here by reportIncident controller.
  * The worker below picks them up and processes AI + notifications asynchronously.
  */
-export const incidentQueue = new Queue<IncidentJobData>('incident-processing', {
-  connection: redis,
-  defaultJobOptions: {
-    attempts: 3,                                    // Retry up to 3 times on failure
-    backoff: { type: 'exponential', delay: 2000 }, // 2s → 4s → 8s between retries
-    removeOnComplete: 100,                          // Keep last 100 completed jobs for debugging
-    removeOnFail: 50,                               // Keep last 50 failed jobs
-  },
-});
+export const incidentQueue = redis
+  ? new Queue<IncidentJobData>('incident-processing', {
+      connection: redis,
+      defaultJobOptions: {
+        attempts: 3,                                    // Retry up to 3 times on failure
+        backoff: { type: 'exponential', delay: 2000 }, // 2s → 4s → 8s between retries
+        removeOnComplete: 100,                          // Keep last 100 completed jobs for debugging
+        removeOnFail: 50,                               // Keep last 50 failed jobs
+      },
+    })
+  : null;
 
 // ─── Direct Processor (Standalone Fallback) ──────────────────────────────────
 
@@ -253,31 +255,35 @@ export async function processIncidentDirectly(
  * For each job: runs AI, updates the incident, sends FCM push, broadcasts SSE.
  * Polling delays tuned for serverless Redis (Upstash) command quotas.
  */
-export const incidentWorker = new Worker<IncidentJobData>(
-  'incident-processing',
-  async (job: Job<IncidentJobData>) => {
-    const { incidentId, imageUrl, latitude, longitude } = job.data;
-    await processIncidentDirectly(incidentId, imageUrl, latitude, longitude);
-  },
-  {
-    connection: redis,
-    concurrency: 3,           // 3 concurrent jobs (safe balance)
-    limiter: {
-      max: 12,                // Max 12 requests per minute (Gemini free tier quota is 15 RPM)
-      duration: 60000,
-    },
-    drainDelay: 30000,        // Wait 30s when queue is empty instead of tight polling
-    stalledInterval: 120000,  // Check stalled jobs every 2 min
-    lockDuration: 60000,      // 60s lock for long Gemini vision queries
-  }
-);
+export const incidentWorker = redis
+  ? new Worker<IncidentJobData>(
+      'incident-processing',
+      async (job: Job<IncidentJobData>) => {
+        const { incidentId, imageUrl, latitude, longitude } = job.data;
+        await processIncidentDirectly(incidentId, imageUrl, latitude, longitude);
+      },
+      {
+        connection: redis,
+        concurrency: 3,           // 3 concurrent jobs (safe balance)
+        limiter: {
+          max: 12,                // Max 12 requests per minute (Gemini free tier quota is 15 RPM)
+          duration: 60000,
+        },
+        drainDelay: 30000,        // Wait 30s when queue is empty instead of tight polling
+        stalledInterval: 120000,  // Check stalled jobs every 2 min
+        lockDuration: 60000,      // 60s lock for long Gemini vision queries
+      }
+    )
+  : null;
 
 // ─── Worker event handlers ─────────────────────────────────────────────────────
 
-incidentWorker.on('completed', (job) => {
-  console.log(`✅ Job ${job.id} completed`);
-});
+if (incidentWorker) {
+  incidentWorker.on('completed', (job) => {
+    console.log(`✅ Job ${job.id} completed`);
+  });
 
-incidentWorker.on('failed', (job, err) => {
-  console.error(`❌ Job ${job?.id} failed (attempt ${job?.attemptsMade}/${job?.opts.attempts}): ${err.message}`);
-});
+  incidentWorker.on('failed', (job, err) => {
+    console.error(`❌ Job ${job?.id} failed (attempt ${job?.attemptsMade}/${job?.opts.attempts}): ${err.message}`);
+  });
+}

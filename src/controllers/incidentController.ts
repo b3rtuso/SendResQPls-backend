@@ -341,13 +341,19 @@ export const reportIncident = async (req: AuthRequest, res: Response) => {
 
     // ② Enqueue the AI classification job — non-blocking, fires in the background
     try {
-      await incidentQueue.add('classify', {
-        incidentId: incident.id,
-        imageUrl,
-        latitude: lat,
-        longitude: lng,
-      });
-      console.log(`📥 Incident ${incident.id} saved. AI job enqueued.`);
+      if (incidentQueue) {
+        await incidentQueue.add('classify', {
+          incidentId: incident.id,
+          imageUrl,
+          latitude: lat,
+          longitude: lng,
+        });
+        console.log(`📥 Incident ${incident.id} saved. AI job enqueued.`);
+      } else {
+        processIncidentDirectly(incident.id, imageUrl, lat, lng).catch((err) => {
+          console.error(`❌ Background execution failed for incident ${incident.id}:`, err.message);
+        });
+      }
     } catch (queueErr: any) {
       console.warn(`⚠️ Redis queue unavailable (${queueErr.message}). Fallback to direct background execution for incident ${incident.id}`);
       // Fallback: process directly in the background without throwing an error or failing the user's report
