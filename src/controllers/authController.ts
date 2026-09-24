@@ -263,6 +263,28 @@ export const changePassword = async (req: AuthRequest, res: Response) => {
   }
 };
 
+/**
+ * Safely resolves the single, canonical mobile frontend URL.
+ * Handles cases where FRONTEND_URL is a comma-separated list of origins (common for CORS).
+ */
+export function getMobileAppUrl(): string {
+  const envUrl = process.env.MOBILE_FRONTEND_URL || process.env.FRONTEND_URL;
+  if (!envUrl) return 'https://sendresqpls-mobile.vercel.app';
+
+  // If FRONTEND_URL is a comma-separated list of origins (e.g. "https://admin...,https://mobile..."):
+  const candidates = envUrl.split(',').map((u) => u.trim()).filter(Boolean);
+  const mobileUrl =
+    candidates.find((u) => u.includes('mobile')) ||
+    candidates.find((u) => !u.includes('admin')) ||
+    candidates[0];
+
+  let clean = (mobileUrl || 'https://sendresqpls-mobile.vercel.app').replace(/\/+$/, '');
+  if (!/^https?:\/\//i.test(clean)) {
+    clean = `https://${clean}`;
+  }
+  return clean;
+}
+
 // ── Password Reset — tokens stored in Redis (survives server restarts) ────────
 
 // POST /api/auth/forgot-password — Send password reset link to email
@@ -294,8 +316,8 @@ export const forgotPassword = async (req: Request, res: Response) => {
     // Store in Redis with 30-minute TTL — survives server restarts unlike in-memory Map
     await redis.set(`pwd_reset:${token}`, user.email, 'EX', 30 * 60);
 
-    // Build reset URL — uses top-level /reset-password to completely bypass any stale cached /mobile redirects
-    const baseUrl = (process.env.FRONTEND_URL || 'https://sendresqpls-mobile.vercel.app').replace(/\/+$/, '');
+    // Build reset URL — uses sanitized single mobile URL to completely bypass any stale cached /mobile redirects
+    const baseUrl = getMobileAppUrl();
     const resetUrl = `${baseUrl}/reset-password?token=${token}`;
 
     await sendPasswordResetEmail(user.email, user.name, resetUrl);

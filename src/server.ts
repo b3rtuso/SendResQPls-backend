@@ -29,7 +29,8 @@ app.use(helmet({
 
 // ── CORS — allow our production & preview frontend origins ─────────────────────
 const allowedOrigins = [
-  process.env.FRONTEND_URL,           // production frontend (set in Render env vars)
+  ...(process.env.FRONTEND_URL ? process.env.FRONTEND_URL.split(',').map((s) => s.trim()) : []),
+  process.env.MOBILE_FRONTEND_URL,
   'http://localhost:5173',            // Vite dev server
   'http://localhost:4173',            // Vite preview
   'http://localhost:3000',
