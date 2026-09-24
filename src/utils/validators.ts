@@ -68,3 +68,37 @@ export const validateUserContact = (email: string, phone: string) => {
 
   return { isEmailValid, isPhoneValid: phoneValidation.valid, phoneError: phoneValidation.error };
 };
+
+export interface PasswordValidationResult {
+  valid: boolean;
+  error?: string;
+}
+
+/**
+ * Standard password complexity requirements:
+ * - At least 8 characters
+ * - At least 1 number (0-9)
+ * - At least 1 uppercase letter (A-Z)
+ * - At least 1 lowercase letter (a-z)
+ */
+export const validatePassword = (password: string | undefined | null): PasswordValidationResult => {
+  if (!password) {
+    return { valid: false, error: 'Password is required and cannot be empty.' };
+  }
+
+  const p = password;
+  const missing: string[] = [];
+  if (p.length < 8) missing.push('at least 8 characters');
+  if (!/\d/.test(p)) missing.push('at least one number (0-9)');
+  if (!/[A-Z]/.test(p)) missing.push('at least one uppercase letter (A-Z)');
+  if (!/[a-z]/.test(p)) missing.push('at least one lowercase letter (a-z)');
+
+  if (missing.length > 0) {
+    return {
+      valid: false,
+      error: `Password must contain ${missing.join(', ')}.`,
+    };
+  }
+
+  return { valid: true };
+};

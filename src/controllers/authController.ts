@@ -5,7 +5,7 @@ import jwt from 'jsonwebtoken';
 import { sendVerificationEmail, sendPasswordResetEmail } from '../services/emailService';
 import { AuthRequest } from '../middleware/auth';
 import { redis } from '../config/redis';
-import { validatePhilippineMobile } from '../utils/validators';
+import { validatePhilippineMobile, validatePassword } from '../utils/validators';
 
 // ── JWT Secret — crash immediately on startup if not configured ───────────────
 const JWT_SECRET = process.env.JWT_SECRET;
@@ -80,6 +80,11 @@ export const register = async (req: Request, res: Response) => {
 
     if (!name || !email || !password) {
       return res.status(400).json({ error: 'Name, email, and password are required.' });
+    }
+
+    const passCheck = validatePassword(password);
+    if (!passCheck.valid) {
+      return res.status(400).json({ error: passCheck.error });
     }
 
     const phoneValidation = validatePhilippineMobile(phoneNumber);
@@ -243,6 +248,11 @@ export const changePassword = async (req: AuthRequest, res: Response) => {
       return res.status(400).json({ error: 'Current password and new password are required.' });
     }
 
+    const passCheck = validatePassword(newPassword);
+    if (!passCheck.valid) {
+      return res.status(400).json({ error: passCheck.error });
+    }
+
     const user = await prisma.user.findUnique({ where: { id: userId } });
     if (!user) return res.status(404).json({ error: 'User not found' });
 
@@ -335,6 +345,11 @@ export const resetPassword = async (req: Request, res: Response) => {
     const { token, newPassword } = req.body;
     if (!token || !newPassword) return res.status(400).json({ error: 'Token and new password are required' });
 
+    const passCheck = validatePassword(newPassword);
+    if (!passCheck.valid) {
+      return res.status(400).json({ error: passCheck.error });
+    }
+
     // Fetch email from Redis (auto-expires after 30 min)
     const email = await redis.get(`pwd_reset:${token}`);
     if (!email) return res.status(400).json({ error: 'Invalid or expired reset link. Please request a new one.' });
@@ -364,8 +379,9 @@ export const createAdmin = async (req: AuthRequest, res: Response) => {
     if (!name || !email || !password) {
       return res.status(400).json({ error: 'Name, email, and password are required.' });
     }
-    if (password.length < 8) {
-      return res.status(400).json({ error: 'Admin password must be at least 8 characters.' });
+    const passCheck = validatePassword(password);
+    if (!passCheck.valid) {
+      return res.status(400).json({ error: passCheck.error });
     }
 
     const phoneValidation = validatePhilippineMobile(phoneNumber);
