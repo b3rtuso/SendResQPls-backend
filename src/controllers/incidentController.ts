@@ -319,6 +319,7 @@ export const reportIncident = async (req: AuthRequest, res: Response) => {
         createdAt: incident.createdAt,
       });
       broadcastSseEvent('incident_created', {
+        id: incident.id,
         incidentId: incident.id,
         status: 'PENDING',
         barangay: resolvedBarangay,
@@ -327,6 +328,10 @@ export const reportIncident = async (req: AuthRequest, res: Response) => {
         longitude: lng,
         photoUrl: imageUrl,
         description: incident.description,
+        aiDetectedType: 'Emergency (Analyzing...)',
+        aiRecommendedDept: 'RESCUE',
+        severity: 'MEDIUM',
+        urgencyScore: 50,
         createdAt: incident.createdAt,
       });
       console.log(`⚡ Immediate SSE broadcast sent for incident ${incident.id}`);
@@ -556,6 +561,17 @@ export const updateIncidentStatus = async (req: AuthRequest, res: Response) => {
       } catch (pushErr: any) {
         console.error(`⚠️ Push notification failed: ${pushErr.message}`);
       }
+    }
+
+    try {
+      broadcastSseEvent('status_updated', {
+        id: String(id),
+        status: status || updated.status,
+        assignedDepartment: assignedDepartment || updated.assignedDepartment || '',
+        updatedAt: updated.updatedAt,
+      });
+    } catch {
+      // SSE broadcast failure should not fail response
     }
 
     res.json({ message: `Incident updated`, ...updated, updated });
