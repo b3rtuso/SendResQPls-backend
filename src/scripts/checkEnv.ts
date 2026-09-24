@@ -159,18 +159,37 @@ async function checkGemini() {
     return;
   }
 
-  try {
-    const genAI = new GoogleGenerativeAI(key);
-    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
-    const res = await model.generateContent('ping');
-    results.push({
-      service: 'AI Vision Analysis (Gemini)',
-      key: 'GEMINI_API_KEY',
-      status: 'OK',
-      details: `Active. Response: "${res.response.text().trim()}"`
-    });
-  } catch (err: any) {
-    const msg = err.message || '';
+  const modelsToTry = [
+    process.env.GEMINI_MODEL,
+    'gemini-3.6-flash',
+    'gemini-2.5-flash',
+    'gemini-flash-latest',
+    'gemini-1.5-flash'
+  ].filter(Boolean) as string[];
+
+  const genAI = new GoogleGenerativeAI(key);
+  let lastError: any = null;
+
+  for (const m of modelsToTry) {
+    try {
+      const model = genAI.getGenerativeModel({ model: m });
+      const res = await model.generateContent('ping');
+      results.push({
+        service: 'AI Vision Analysis (Gemini)',
+        key: `GEMINI_API_KEY (${m})`,
+        status: 'OK',
+        details: `Active. Response: "${res.response.text().trim()}"`
+      });
+      return;
+    } catch (err: any) {
+      lastError = err;
+      if (err.message?.includes('CONSUMER_SUSPENDED')) {
+        break;
+      }
+    }
+  }
+
+  const msg = lastError?.message || '';
     if (msg.includes('CONSUMER_SUSPENDED')) {
       results.push({
         service: 'AI Vision Analysis (Gemini)',
@@ -186,8 +205,9 @@ async function checkGemini() {
         details: msg
       });
     }
-  }
 }
+
+
 
 function checkFirebase() {
   let serviceAccount: object | null = null;

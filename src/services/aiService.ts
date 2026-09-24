@@ -140,24 +140,55 @@ Strict Validation Rules:
 - If the image is a meme, selfie, random object, logo, food, pet, text screenshot, or harmless scenery → recognized: false, incidentType: "Unrecognized", recommendedDept: "UNKNOWN", severity: "LOW", urgencyScore: 10, suggestAction: "REJECT"
 - When in doubt, default to recognized: false and suggestAction: "REJECT" to prevent false alarms.`;
 
-    let attempts = 0;
+    const candidateModels = [
+      process.env.GEMINI_MODEL,
+      "gemini-3.6-flash",
+      "gemini-2.5-flash",
+      "gemini-flash-latest",
+      "gemini-1.5-flash"
+    ].filter(Boolean) as string[];
+
     let result: any = null;
-    while (attempts < 2) {
+    let lastError: any = null;
+
+    for (const modelName of candidateModels) {
       try {
-        result = await model.generateContent([
-          prompt,
-          { inlineData: { data: imageData, mimeType } }
-        ]);
-        break;
-      } catch (genErr: any) {
-        attempts++;
-        const errMsg = (genErr.message || '').toLowerCase();
-        if (attempts >= 2 || (!errMsg.includes('429') && !errMsg.includes('quota') && !errMsg.includes('resource_exhausted'))) {
-          throw genErr;
+        const model = genAI.getGenerativeModel({ model: modelName });
+        let attempts = 0;
+        while (attempts < 2) {
+          try {
+            result = await model.generateContent([
+              prompt,
+              { inlineData: { data: imageData, mimeType } }
+            ]);
+            break;
+          } catch (genErr: any) {
+            attempts++;
+            const errMsg = (genErr.message || '').toLowerCase();
+            if (errMsg.includes('not found') || errMsg.includes('no longer available')) {
+              throw genErr;
+            }
+            if (attempts >= 2 || (!errMsg.includes('429') && !errMsg.includes('quota') && !errMsg.includes('resource_exhausted'))) {
+              throw genErr;
+            }
+            console.warn(`⚠️ Gemini rate limit hit on ${modelName}, backing off 2.5s before retry (attempt ${attempts})...`);
+            await new Promise(r => setTimeout(r, 2500));
+          }
         }
-        console.warn(`⚠️ Gemini rate limit hit, backing off 2.5s before retry (attempt ${attempts})...`);
-        await new Promise(r => setTimeout(r, 2500));
+        if (result) break;
+      } catch (err: any) {
+        lastError = err;
+        const msg = (err.message || '').toLowerCase();
+        if (msg.includes('not found') || msg.includes('no longer available')) {
+          console.warn(`⚠️ Gemini model ${modelName} unavailable, trying next candidate...`);
+          continue;
+        }
+        throw err;
       }
+    }
+
+    if (!result) {
+      throw lastError || new Error("Failed to generate content with any Gemini model.");
     }
 
     const text = result.response.text();
