@@ -294,9 +294,9 @@ export const forgotPassword = async (req: Request, res: Response) => {
     // Store in Redis with 30-minute TTL — survives server restarts unlike in-memory Map
     await redis.set(`pwd_reset:${token}`, user.email, 'EX', 30 * 60);
 
-    // Build reset URL — uses the app's frontend URL
+    // Build reset URL — uses top-level /reset-password to completely bypass any stale cached /mobile redirects
     const baseUrl = (process.env.FRONTEND_URL || 'https://sendresqpls-mobile.vercel.app').replace(/\/+$/, '');
-    const resetUrl = `${baseUrl}/mobile/reset-password?token=${token}`;
+    const resetUrl = `${baseUrl}/reset-password?token=${token}`;
 
     await sendPasswordResetEmail(user.email, user.name, resetUrl);
     console.log(`📧 Password reset link sent to ${user.email}`);
