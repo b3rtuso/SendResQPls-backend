@@ -103,7 +103,7 @@ export async function processIncidentDirectly(
   const incident = await prisma.incident.update({
     where: { id: incidentId },
     data: {
-      aiDetectedType: isLowConfidence ? `${assessment.incidentType} (Low Confidence)` : assessment.incidentType,
+      aiDetectedType: assessment.incidentType,
       aiRecommendedDept: aiRecognized ? recommended : undefined,
       severity: assessment.severity || 'MEDIUM',
       urgencyScore: assessment.urgencyScore || 50,
