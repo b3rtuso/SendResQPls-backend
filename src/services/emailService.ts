@@ -395,7 +395,7 @@ export const sendPasswordResetEmail = async (to: string, name: string, resetUrl:
       Hello <strong style="color:#0A1931;">${name || 'Citizen'}</strong>,
     </p>
     <p style="margin:0 0 24px; color:#64748B; font-size:13.5px; line-height:1.6;">
-      We received a request to reset your SendResQPls account password. Click the button below to choose a new password:
+      We received a request to reset your SendResQPls account password. Click the button below to choose a new password. After resetting, open the SendResQPls mobile app to log in:
     </p>
 
     <!-- CTA Button -->
@@ -425,7 +425,7 @@ export const sendPasswordResetEmail = async (to: string, name: string, resetUrl:
     </table>
 
     <p style="margin:0 0 16px; color:#94A3B8; font-size:12px; line-height:1.45;">
-      If you did not request a password reset, you can safely ignore this email - your account remains secure.
+      After resetting your password, return to the <strong>SendResQPls mobile app</strong> on your device to log in. If you did not request a password reset, you can safely ignore this email — your account remains secure.
     </p>
 
     <!-- Fallback Link -->
