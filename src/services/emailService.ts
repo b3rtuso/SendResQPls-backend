@@ -152,7 +152,7 @@ async function sendEmail(
   to: string,
   subject: string,
   htmlContent: string,
-  skipAttachments = false,
+  skipAttachments = true,
 ) {
   const attachments = skipAttachments ? undefined : getEmailAttachments();
   const payload: any = {
@@ -243,7 +243,6 @@ export const sendVerificationEmail = async (to: string, code: string) => {
       to,
       `${code} is your SendResQPls verification code`,
       html,
-      false,
     );
   } catch (err: any) {
     throw new Error(err.response?.data?.message || err.message);
@@ -449,7 +448,6 @@ export const sendPasswordResetEmail = async (to: string, name: string, resetUrl:
       to,
       'Reset Your SendResQPls Password',
       html,
-      false,
     );
   } catch (err: any) {
     throw new Error(err.response?.data?.message || err.message);
