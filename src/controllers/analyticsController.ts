@@ -16,6 +16,8 @@ export const getAnalyticsSummary = async (_req: Request, res: Response) => {
 
     const [
       statusCounts,
+      pendingToday,
+      dispatchedToday,
       resolvedToday,
       createdToday,
       createdThisWeek,
@@ -25,6 +27,18 @@ export const getAnalyticsSummary = async (_req: Request, res: Response) => {
       prisma.incident.groupBy({
         by: ['status'],
         _count: { id: true },
+      }),
+      prisma.incident.count({
+        where: {
+          status: 'PENDING',
+          createdAt: { gte: today },
+        },
+      }),
+      prisma.incident.count({
+        where: {
+          status: 'DISPATCHED',
+          updatedAt: { gte: today },
+        },
       }),
       prisma.incident.count({
         where: {
@@ -84,8 +98,10 @@ export const getAnalyticsSummary = async (_req: Request, res: Response) => {
       dispatched: counts.DISPATCHED,
       resolved: counts.RESOLVED,
       rejected: counts.REJECTED,
-      resolvedToday,
       createdToday,
+      pendingToday,
+      dispatchedToday,
+      resolvedToday,
       createdThisWeek,
       createdThisMonth,
       byDepartment: depts,
