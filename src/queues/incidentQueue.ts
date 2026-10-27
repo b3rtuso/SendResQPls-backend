@@ -45,13 +45,14 @@ export async function processIncidentDirectly(
 ) {
   console.log(`⚙️  Processing incident AI & dispatch directly → incident ${incidentId}`);
 
-  // ── 1. Run AI classification ───────────────────────────────────────────────
+  // ── 1. Run AI classification & Real-time Liveness Audit ───────────────────
   const assessment = await runAIAnalysis(imageUrl);
   const rawConfidence: string = (assessment.confidence || '').toLowerCase();
   const isLowConfidence: boolean = rawConfidence === 'low';
-  // Treat incident as recognized ONLY if recognized flag is true AND confidence is NOT low
+  const isRecapture: boolean = Boolean(assessment.recaptureDetected || assessment.isLiveScene === false);
+  // Treat incident as recognized ONLY if recognized flag is true, confidence is NOT low, AND it is NOT a recapture
   const baseRecognized: boolean = assessment.recognized ?? isRecognizedIncident(assessment.incidentType);
-  const aiRecognized: boolean = baseRecognized && !isLowConfidence;
+  const aiRecognized: boolean = baseRecognized && !isLowConfidence && !isRecapture;
   const aiConfidence: string = assessment.confidence || (aiRecognized ? 'medium' : 'low');
 
   // Dynamically resolve AI suggestion against all registered departments in the database
@@ -94,11 +95,14 @@ export async function processIncidentDirectly(
   const finalStatus = aiRecognized ? 'PENDING' : 'REVIEWING';
 
   // ── 2. Update the incident record with AI results ─────────────────────────
-  const adminNoteMsg = aiRecognized
-    ? undefined
-    : isLowConfidence
+  let adminNoteMsg: string | undefined = undefined;
+  if (isRecapture) {
+    adminNoteMsg = `⚠️ SUSPECTED RECAPTURE (${assessment.recaptureType || 'SCREEN_DISPLAY'}): AI detected this photo was captured from a display screen, printed photograph, or archived media. Not verified as a real-time live emergency. ${assessment.authenticityReasoning || ''}`.trim();
+  } else if (!aiRecognized) {
+    adminNoteMsg = isLowConfidence
       ? `⚠️ AI had low confidence in recognizing this incident (type: ${assessment.incidentType}, confidence: low). Admin review required.`
       : `⚠️ AI could not recognize this incident (confidence: ${aiConfidence}). Admin review required.`;
+  }
 
   const incident = await prisma.incident.update({
     where: { id: incidentId },
@@ -122,6 +126,16 @@ export async function processIncidentDirectly(
         type: 'AI_ANALYSIS',
       },
     });
+
+    if (isRecapture) {
+      await prisma.incidentActivity.create({
+        data: {
+          incidentId,
+          title: `⚠️ Liveness alert: Suspected recapture (${assessment.recaptureType || 'Screen/Photo'})`,
+          type: 'AI_ANALYSIS',
+        },
+      });
+    }
 
     if (aiRecognized && recommended) {
       await prisma.incidentActivity.create({
@@ -150,10 +164,12 @@ export async function processIncidentDirectly(
         await messaging.sendEachForMulticast({
           tokens: adminTokens,
           notification: {
-            title: aiRecognized ? '🚨 Bagong Emergency Report!' : '⚠️ Hindi Nakilala ang Incident!',
-            body: aiRecognized
-              ? `${assessment.incidentType} na na-detect sa Balayan. I-review na agad!`
-              : `May bagong report na hindi nakilala ng AI. Kailangan ng admin decision.`,
+            title: isRecapture ? '⚠️ SUSPECTED RECAPTURE / FAKE REPORT!' : (aiRecognized ? '🚨 Bagong Emergency Report!' : '⚠️ Hindi Nakilala ang Incident!'),
+            body: isRecapture
+              ? `AI detected non-realtime recaptured media (${assessment.recaptureType || 'Screen/Photo'}). Admin review required.`
+              : (aiRecognized
+                  ? `${assessment.incidentType} na na-detect sa Balayan. I-review na agad!`
+                  : `May bagong report na hindi nakilala ng AI. Kailangan ng admin decision.`),
           },
           data: {
             incidentId: incident.id,

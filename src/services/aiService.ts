@@ -103,8 +103,10 @@ export const runAIAnalysis = async (imageUrl: string) => {
       imageData = fileBuffer.toString("base64");
     }
 
-    const prompt = `You are an emergency incident classifier and urgency evaluator for MDRRMO Balayan, Batangas Philippines.
-Analyze this image and determine if it shows a real emergency incident.
+    const prompt = `You are an emergency incident classifier, authenticity evaluator, and urgency rater for MDRRMO Balayan, Batangas Philippines.
+Analyze this image to determine:
+1. Incident classification and urgency.
+2. Authenticity & Real-Time Liveness: Check if this photo captures an active, real-time emergency happening directly in front of the camera, OR if it is a RECAPTURE (a photo taken of another display screen, monitor, TV, phone, tablet, or a physical printed photo/newspaper/document).
 
 Return ONLY a JSON object with this exact structure:
 {
@@ -114,9 +116,21 @@ Return ONLY a JSON object with this exact structure:
   "severity": "<CRITICAL|HIGH|MEDIUM|LOW>",
   "urgencyScore": <number 1-100>,
   "recognized": <true|false>,
+  "isLiveScene": <true|false>,
+  "recaptureDetected": <true|false>,
+  "recaptureType": "<NONE|SCREEN_DISPLAY|PRINTED_PHOTO|DIGITAL_SCREENSHOT|ARCHIVED_MEDIA>",
+  "authenticityReasoning": "<concise explanation of whether this is a direct real-time capture or a recapture>",
   "suggestAction": "<PROCESS|REJECT>",
   "reasoning": "<brief explanation of what is detected in the image>"
 }
+
+Authenticity & Liveness Detection Rules:
+- A photo is a RECAPTURE (recaptureDetected: true, isLiveScene: false) if:
+  1. SCREEN_DISPLAY: The photo shows a computer monitor, television, laptop, or mobile screen displaying an incident. Look for visible monitor borders/bezels, LCD moiré scan lines, pixel grids, glare/reflection on glass screens, browser address bars, YouTube/video scrubber bars, or TV broadcast news graphics.
+  2. PRINTED_PHOTO: The photo shows a physical paper photo, magazine, newspaper clipping, or framed picture. Look for paper sheen, margins, white border lines, halftone printing artifacts, or fingers visibly holding a physical print.
+  3. DIGITAL_SCREENSHOT: The image is a direct device screenshot or downloaded image file rather than a camera shot.
+- If recaptureDetected is true, set recognized: false, suggestAction: "REJECT", and explain clearly in authenticityReasoning (e.g., "Photo is recaptured from a computer/TV screen showing old footage rather than an active real-time incident").
+- If the image shows a genuine direct, real-world live scene happening in the environment, set isLiveScene: true, recaptureDetected: false, recaptureType: "NONE".
 
 Department Mapping:
 - Fire → BFP
@@ -136,7 +150,7 @@ Severity & Urgency Scoring Rules:
 - LOW (1-39): Harmless situations, memes, random objects, benign landscapes, selfies.
 
 Strict Validation Rules:
-- If the image clearly depicts an actual disaster/emergency → recognized: true, suggestAction: "PROCESS"
+- If the image clearly depicts an actual disaster/emergency happening live → recognized: true, isLiveScene: true, suggestAction: "PROCESS"
 - If the image is a meme, selfie, random object, logo, food, pet, text screenshot, or harmless scenery → recognized: false, incidentType: "Unrecognized", recommendedDept: "UNKNOWN", severity: "LOW", urgencyScore: 10, suggestAction: "REJECT"
 - When in doubt, default to recognized: false and suggestAction: "REJECT" to prevent false alarms.`;
 
@@ -200,6 +214,20 @@ Strict Validation Rules:
       parsed.recognized = isRecognizedIncident(parsed.incidentType);
     }
 
+    // Normalize liveness & recapture metadata
+    if (parsed.isLiveScene === undefined) {
+      parsed.isLiveScene = !parsed.recaptureDetected;
+    }
+    if (parsed.recaptureDetected === undefined) {
+      parsed.recaptureDetected = parsed.isLiveScene === false;
+    }
+    if (parsed.recaptureDetected) {
+      // If a recapture was detected (photo of a screen, monitor, or printout),
+      // prevent auto-dispatch by setting recognized to false
+      parsed.recognized = false;
+      parsed.suggestAction = "REJECT";
+    }
+
     // Ensure calibrated severity and urgency score
     const fallback = calculateUrgency(parsed.incidentType, parsed.confidence);
     if (!parsed.severity) parsed.severity = fallback.severity;
@@ -219,6 +247,10 @@ Strict Validation Rules:
       severity: fallback.severity,
       urgencyScore: fallback.urgencyScore,
       recognized: false,
+      isLiveScene: true,
+      recaptureDetected: false,
+      recaptureType: "NONE",
+      authenticityReasoning: "Fallback assessment due to service error",
     };
   }
 };

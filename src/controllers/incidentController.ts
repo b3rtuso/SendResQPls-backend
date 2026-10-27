@@ -8,6 +8,13 @@ import { messaging } from '../config/firebase';
 import { AuthRequest } from '../middleware/auth';
 import { withRLS } from '../utils/rlsQuery';
 import { incidentQueue, processIncidentDirectly } from '../queues/incidentQueue';
+import { v2 as cloudinary } from 'cloudinary';
+
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET,
+});
 
 // ─── SSE: Admin real-time new-incident notifications ──────────────────────────
 // Stores all connected admin browser clients
@@ -200,7 +207,7 @@ export const getIncidentStats = async (_req: Request, res: Response) => {
 // Protected: citizen can only view incidents they reported
 export const getIncident = async (req: AuthRequest, res: Response) => {
   try {
-    const { id } = req.params;
+    const id = req.params.id as string;
 
     const incident = await prisma.incident.findUnique({
       where: { id },
@@ -384,7 +391,7 @@ export const reportIncident = async (req: AuthRequest, res: Response) => {
 // Protected: requireAdmin middleware ensures only admins reach this handler
 export const updateIncidentStatus = async (req: AuthRequest, res: Response) => {
   try {
-    const { id } = req.params;
+    const id = req.params.id as string;
     const { status, adminNotes, assignedDepartment, resolutionForm, severity, urgencyScore, aiDetectedType } = req.body;
 
     const current = await prisma.incident.findUnique({
@@ -471,11 +478,20 @@ export const updateIncidentStatus = async (req: AuthRequest, res: Response) => {
       });
     }
 
-    const updated: any = await prisma.incident.update({
-      where: { id },
-      data,
-      include: { reporter: true, resolutionForm: true, activities: { orderBy: { createdAt: 'asc' } } },
-    });
+    // If resolution form includes a base64 photo, upload to Cloudinary and store HTTPS URL
+    if (resolutionForm?.procedurePhotoUrl && resolutionForm.procedurePhotoUrl.startsWith('data:image/')) {
+      try {
+        console.log(`📸 Uploading resolution procedure photo to Cloudinary for incident ${id}...`);
+        const uploadRes = await cloudinary.uploader.upload(resolutionForm.procedurePhotoUrl, {
+          folder: 'sendresqpls/procedures',
+          resource_type: 'image',
+        });
+        resolutionForm.procedurePhotoUrl = uploadRes.secure_url;
+        console.log(`✅ Resolution procedure photo uploaded: ${uploadRes.secure_url}`);
+      } catch (cloudErr: any) {
+        console.warn('⚠️ Cloudinary procedure photo upload fallback:', cloudErr.message);
+      }
+    }
 
     // Save or update resolution questionnaire form if provided
     if (resolutionForm) {
@@ -490,6 +506,12 @@ export const updateIncidentStatus = async (req: AuthRequest, res: Response) => {
         },
       });
     }
+
+    const updated: any = await prisma.incident.update({
+      where: { id },
+      data,
+      include: { reporter: true, resolutionForm: true, activities: { orderBy: { createdAt: 'asc' } } },
+    });
 
     // Sync department statuses dynamically in the database
     await syncDepartmentStatuses();
