@@ -99,7 +99,19 @@ export const register = async (req: Request, res: Response) => {
     const newUser = await prisma.user.create({
       data: { name, email, passwordHash: hashedPassword, phoneNumber: phoneValidation.cleaned, role: 'CITIZEN' }
     });
-    res.status(201).json(newUser);
+    const token = jwt.sign({ userId: newUser.id, role: newUser.role }, JWT_SECRET, { expiresIn: '7d' });
+    res.status(201).json({
+      message: 'Account created successfully',
+      token,
+      role: newUser.role,
+      user: {
+        id: newUser.id,
+        name: newUser.name,
+        email: newUser.email,
+        phoneNumber: newUser.phoneNumber,
+        role: newUser.role,
+      },
+    });
   } catch (error: any) {
     if (error.code === 'P2002') {
       const target = error.meta?.target;
