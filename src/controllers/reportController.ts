@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import Docxtemplater from 'docxtemplater';
 import PizZip from 'pizzip';
+import axios from 'axios';
 import { prisma } from '../config/db';
 import { getNearestBarangay } from '../services/geocodingService';
 
@@ -76,6 +77,42 @@ function describeType(inc: any): string {
   const raw = inc.aiDetectedType ?? '';
   if (!raw || raw.trim() === '' || raw.includes('Pending Review') || raw.includes('Processing')) return 'General Emergency';
   return raw.replace(/\b\w/g, (c: string) => c.toUpperCase());
+}
+
+
+// ─── Image Fetcher & Drawing Generator for Docx ──────────────────────────────
+
+async function fetchImageBufferNode(url: string): Promise<{ data: Buffer; ext: string } | null> {
+  if (!url) return null;
+  try {
+    if (url.startsWith('data:image/')) {
+      const parts = url.split(',');
+      const match = parts[0].match(/:(.*?);/);
+      const mime = match ? match[1] : 'image/jpeg';
+      const rawExt = mime.split('/')[1] || 'jpeg';
+      const ext = rawExt === 'jpg' ? 'jpeg' : rawExt;
+      const buf = Buffer.from(parts[1], 'base64');
+      return { data: buf, ext };
+    }
+
+    const res = await axios.get(url, {
+      responseType: 'arraybuffer',
+      timeout: 12000,
+    });
+    if (res.status !== 200 || !res.data) return null;
+
+    const contentType = String(res.headers['content-type'] || '');
+    const ext = contentType.includes('png') ? 'png' : 'jpeg';
+    const buf = Buffer.from(res.data);
+    return { data: buf, ext };
+  } catch (err: any) {
+    console.warn(`⚠️ Could not fetch image for docx export from URL [${url}]:`, err.message);
+    return null;
+  }
+}
+
+function makeDrawingXml(rId: string, docId: number, name: string, cx: number, cy: number): string {
+  return `<w:drawing><wp:inline distT="0" distB="0" distL="0" distR="0"><wp:extent cx="${cx}" cy="${cy}"/><wp:effectExtent l="0" t="0" r="0" b="0"/><wp:docPr id="${docId}" name="${name}"/><wp:cNvGraphicFramePr><a:graphicFrameLocks xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" noChangeAspect="1"/></wp:cNvGraphicFramePr><a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:nvPicPr><pic:cNvPr id="${docId}" name="${name}"/><pic:cNvPicPr><a:picLocks xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" noChangeAspect="1" noChangeArrowheads="1"/></pic:cNvPicPr></pic:nvPicPr><pic:blipFill><a:blip xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" r:embed="${rId}"/><a:stretch xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:fillRect/></a:stretch></pic:blipFill><pic:spPr bwMode="auto"><a:xfrm xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:off x="0" y="0"/><a:ext cx="${cx}" cy="${cy}"/></a:xfrm><a:prstGeom xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing>`;
 }
 
 // ─── Typography & Page Setup Post-Processor ──────────────────────────────────
@@ -217,74 +254,145 @@ export const downloadOfficialReport = async (req: Request, res: Response) => {
 
     const templateBuf = getTemplateBuffer(range);
     const zip = new PizZip(templateBuf);
-    const doc = new Docxtemplater(zip, {
-      paragraphLoop: true,
-      linebreaks: true,
-      nullGetter: () => '',
-    });
 
     let templateData: Record<string, any> = {};
 
     if (range === 'daily') {
       const reportDate = formatDisplayDate(dateQuery);
-      const incidentData = sorted.map((inc, idx) => {
-        const rf = inc.resolutionForm;
-        const incTimeStr = rf?.incidentTime 
-          ? (rf.incidentTime.includes('H') ? rf.incidentTime : rf.incidentTime.replace(':', '') + 'H') 
-          : militaryTime(inc.createdAt);
-        const incDateStr = rf?.incidentDate ? formatDisplayDate(rf.incidentDate) : formatDisplayDate(inc.createdAt);
-        const incTypeStr = describeType(inc);
-        const locStr = resolveLocation(inc);
 
-        const patientName = rf?.patientName || inc.reporter?.name || 'Citizen Reporter / Patient';
-        const patientSex = (rf?.patientSex || 'unspecified').toLowerCase();
-        const patientAge = rf?.patientAge || 'N/A';
-        const patientAddress = cleanLocation(rf?.patientAddress || locStr);
+      // Ensure JPEG and PNG support in [Content_Types].xml
+      let contentTypes = zip.file('[Content_Types].xml')?.asText() || '';
+      if (!contentTypes.includes('Extension="jpeg"') && !contentTypes.includes('Extension="jpg"')) {
+        contentTypes = contentTypes.replace('</Types>', '<Default Extension="jpeg" ContentType="image/jpeg"/><Default Extension="jpg" ContentType="image/jpeg"/></Types>');
+        zip.file('[Content_Types].xml', contentTypes);
+      }
+      if (!contentTypes.includes('Extension="png"')) {
+        contentTypes = contentTypes.replace('</Types>', '<Default Extension="png" ContentType="image/png"/></Types>');
+        zip.file('[Content_Types].xml', contentTypes);
+      }
 
-        const intoxicationDetail = rf?.intoxicationSuspected?.toLowerCase() === 'yes' ? 'was suspected of alcohol intoxication, ' : '';
-        const mechanismDetail = rf?.mechanismOfInjury 
-          ? `crashed / suffered ${rf.mechanismOfInjury.toLowerCase()}, ` 
-          : (rf?.howIncidentHappened ? `experienced ${rf.howIncidentHappened.toLowerCase()}, ` : 'was involved in an emergency incident, ');
-        const injuriesObserved = rf?.injuriesObserved ? rf.injuriesObserved.toLowerCase() : 'injuries assessed on scene';
+      // Safety check: ensure {@procedure_photo_xml} is properly recognized by docxtemplater
+      let docXml = zip.file('word/document.xml')?.asText() || '';
+      if (docXml.includes('{@procedure_photo_xml}') && !docXml.includes('<w:t>{@procedure_photo_xml}</w:t>')) {
+        docXml = docXml.replace('{@procedure_photo_xml}', '<w:p><w:r><w:t>{@procedure_photo_xml}</w:t></w:r></w:p>');
+        zip.file('word/document.xml', docXml);
+      }
 
-        const responders = rf?.responderNames || (inc.assignedDepartment ? `${inc.assignedDepartment} On-Duty Team` : 'MDRRMO Rescue & EMS Response Team');
-        const interventions = rf?.treatmentInterventions 
-          ? `including ${rf.treatmentInterventions.toLowerCase()},` 
-          : 'including supportive patient positioning and continuous monitoring,';
+      let relsXml = zip.file('word/_rels/document.xml.rels')?.asText() || '';
 
-        const hasVitals = rf?.oxygenSaturation || rf?.pulseRate || rf?.bloodPressure || rf?.gcsScore;
-        const vitalsDetail = hasVitals
-          ? `an SaO₂ of ${rf?.oxygenSaturation || '98'}%, pulse rate of ${rf?.pulseRate || '80'} bpm, blood pressure of ${rf?.bloodPressure || '120/80'} mmHg, and a GCS of ${rf?.gcsScore || '15'}`
-          : 'vital signs monitored and maintained within stable limits';
+      const incidentData = await Promise.all(
+        sorted.map(async (inc, idx) => {
+          const rf = inc.resolutionForm;
+          const incTimeStr = rf?.incidentTime 
+            ? (rf.incidentTime.includes('H') ? rf.incidentTime : rf.incidentTime.replace(':', '') + 'H') 
+            : militaryTime(inc.createdAt);
+          const incDateStr = rf?.incidentDate ? formatDisplayDate(rf.incidentDate) : formatDisplayDate(inc.createdAt);
+          const incTypeStr = describeType(inc);
+          const locStr = resolveLocation(inc);
 
-        const dispositionDetail = rf?.destinationFacility
-          ? `immediately transported to ${rf.destinationFacility} for further medical evaluation and management`
-          : (rf?.dispositionStatus === 'DEAD_ON_SPOT'
-              ? 'pronounced deceased on the spot and endorsed to authorities'
-              : (rf?.dispositionStatus === 'REFUSED_TRANSPORT'
-                  ? 'refused ambulance transport after on-scene care and signed release waiver'
-                  : 'managed and rendered appropriate care on scene'));
+          const patientName = rf?.patientName || inc.reporter?.name || 'Citizen Reporter / Patient';
+          const patientSex = (rf?.patientSex || 'unspecified').toLowerCase();
+          const patientAge = rf?.patientAge || 'N/A';
+          const patientAddress = cleanLocation(rf?.patientAddress || locStr);
 
-        return {
-          incident_no: idx + 1,
-          time: incTimeStr,
-          date: incDateStr || reportDate,
-          incident_type: incTypeStr,
-          location: locStr,
-          patient_name: patientName,
-          patient_sex: patientSex,
-          patient_age: patientAge,
-          patient_address: patientAddress,
-          intoxication_detail: intoxicationDetail,
-          mechanism_detail: mechanismDetail,
-          injuries_observed: injuriesObserved,
-          responders: responders,
-          interventions_detail: interventions,
-          vitals_detail: vitalsDetail,
-          disposition_detail: dispositionDetail,
-          procedure_photo_xml: '',
-        };
-      });
+          const intoxicationDetail = rf?.intoxicationSuspected?.toLowerCase() === 'yes' ? 'was suspected of alcohol intoxication, ' : '';
+          const mechanismDetail = rf?.mechanismOfInjury 
+            ? `crashed / suffered ${rf.mechanismOfInjury.toLowerCase()}, ` 
+            : (rf?.howIncidentHappened ? `experienced ${rf.howIncidentHappened.toLowerCase()}, ` : 'was involved in an emergency incident, ');
+          const injuriesObserved = rf?.injuriesObserved ? rf.injuriesObserved.toLowerCase() : 'injuries assessed on scene';
+
+          const responders = rf?.responderNames || (inc.assignedDepartment ? `${inc.assignedDepartment} On-Duty Team` : 'MDRRMO Rescue & EMS Response Team');
+          const interventions = rf?.treatmentInterventions 
+            ? `including ${rf.treatmentInterventions.toLowerCase()},` 
+            : 'including supportive patient positioning and continuous monitoring,';
+
+          const hasVitals = rf?.oxygenSaturation || rf?.pulseRate || rf?.bloodPressure || rf?.gcsScore;
+          const vitalsDetail = hasVitals
+            ? `an SaO₂ of ${rf?.oxygenSaturation || '98'}%, pulse rate of ${rf?.pulseRate || '80'} bpm, blood pressure of ${rf?.bloodPressure || '120/80'} mmHg, and a GCS of ${rf?.gcsScore || '15'}`
+            : 'vital signs monitored and maintained within stable limits';
+
+          const dispositionDetail = rf?.destinationFacility
+            ? `immediately transported to ${rf.destinationFacility} for further medical evaluation and management`
+            : (rf?.dispositionStatus === 'DEAD_ON_SPOT'
+                ? 'pronounced deceased on the spot and endorsed to authorities'
+                : (rf?.dispositionStatus === 'REFUSED_TRANSPORT'
+                    ? 'refused ambulance transport after on-scene care and signed release waiver'
+                    : 'managed and rendered appropriate care on scene'));
+
+          // Dual-photo side-by-side embedding (Citizen Report photo + Responder Procedure photo)
+          let procedurePhotoXml = '';
+          const citizenPhotoUrl = inc.photoUrl;
+          const procedurePhotoUrl = rf?.procedurePhotoUrl;
+
+          const [citizenPhotoData, procedurePhotoData] = await Promise.all([
+            citizenPhotoUrl ? fetchImageBufferNode(citizenPhotoUrl) : Promise.resolve(null),
+            procedurePhotoUrl ? fetchImageBufferNode(procedurePhotoUrl) : Promise.resolve(null),
+          ]);
+
+          if (citizenPhotoData && procedurePhotoData) {
+            // Both photos exist: render side-by-side in a borderless 2-column table matching official reference
+            const relId1 = `rIdPhoto_${idx + 1}_citizen`;
+            const relId2 = `rIdPhoto_${idx + 1}_proc`;
+            const path1 = `media/inc_${idx + 1}_citizen.${citizenPhotoData.ext}`;
+            const path2 = `media/inc_${idx + 1}_proc.${procedurePhotoData.ext}`;
+
+            zip.file(`word/${path1}`, citizenPhotoData.data);
+            zip.file(`word/${path2}`, procedurePhotoData.data);
+
+            if (!relsXml.includes(relId1)) {
+              relsXml = relsXml.replace('</Relationships>', `<Relationship Id="${relId1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="${path1}"/></Relationships>`);
+            }
+            if (!relsXml.includes(relId2)) {
+              relsXml = relsXml.replace('</Relationships>', `<Relationship Id="${relId2}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="${path2}"/></Relationships>`);
+            }
+
+            const cx = 2857500; // ~3.125 inches
+            const cy = 3571875; // ~3.9 inches (matching reference photo proportions)
+
+            procedurePhotoXml = `<w:tbl><w:tblPr><w:tblW w:w="9360" w:type="dxa"/><w:jc w:val="center"/><w:tblBorders><w:top w:val="none"/><w:left w:val="none"/><w:bottom w:val="none"/><w:right w:val="none"/><w:insideH w:val="none"/><w:insideV w:val="none"/></w:tblBorders><w:tblCellMar><w:top w:w="60" w:type="dxa"/><w:bottom w:w="60" w:type="dxa"/><w:left w:w="80" w:type="dxa"/><w:right w:w="80" w:type="dxa"/></w:tblCellMar></w:tblPr><w:tr><w:tc><w:tcPr><w:tcW w:w="4680" w:type="dxa"/><w:vAlign w:val="center"/></w:tcPr><w:p><w:pPr><w:jc w:val="center"/><w:spacing w:before="60" w:after="40"/></w:pPr><w:r>${makeDrawingXml(relId1, 1000 + idx * 2 + 1, 'Citizen Initial Incident Photo', cx, cy)}</w:r></w:p></w:tc><w:tc><w:tcPr><w:tcW w:w="4680" w:type="dxa"/><w:vAlign w:val="center"/></w:tcPr><w:p><w:pPr><w:jc w:val="center"/><w:spacing w:before="60" w:after="40"/></w:pPr><w:r>${makeDrawingXml(relId2, 1000 + idx * 2 + 2, 'Responder Procedure Photo', cx, cy)}</w:r></w:p></w:tc></w:tr></w:tbl><w:p><w:pPr><w:spacing w:after="120" w:line="240" w:lineRule="auto"/></w:pPr></w:p>`;
+          } else if (citizenPhotoData || procedurePhotoData) {
+            // Only one photo exists: render single centered drawing
+            const singlePhoto = citizenPhotoData || procedurePhotoData;
+            const isCitizen = !!citizenPhotoData;
+            const relId = `rIdPhoto_${idx + 1}_single`;
+            const path = `media/inc_${idx + 1}_single.${singlePhoto.ext}`;
+
+            zip.file(`word/${path}`, singlePhoto.data);
+
+            if (!relsXml.includes(relId)) {
+              relsXml = relsXml.replace('</Relationships>', `<Relationship Id="${relId}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="${path}"/></Relationships>`);
+            }
+
+            const cx = 4572000; // 5.0 inches
+            const cy = 3429000; // 3.75 inches
+            const desc = isCitizen ? 'Citizen Initial Incident Photo' : 'Responder Procedure Photo';
+
+            procedurePhotoXml = `<w:p><w:pPr><w:jc w:val="center"/><w:spacing w:before="100" w:after="120"/></w:pPr><w:r>${makeDrawingXml(relId, 1000 + idx * 2 + 1, desc, cx, cy)}</w:r></w:p>`;
+          }
+
+          return {
+            incident_no: idx + 1,
+            time: incTimeStr,
+            date: incDateStr || reportDate,
+            incident_type: incTypeStr,
+            location: locStr,
+            patient_name: patientName,
+            patient_sex: patientSex,
+            patient_age: patientAge,
+            patient_address: patientAddress,
+            intoxication_detail: intoxicationDetail,
+            mechanism_detail: mechanismDetail,
+            injuries_observed: injuriesObserved,
+            responders: responders,
+            interventions_detail: interventions,
+            vitals_detail: vitalsDetail,
+            disposition_detail: dispositionDetail,
+            procedure_photo_xml: procedurePhotoXml,
+          };
+        })
+      );
+
+      zip.file('word/_rels/document.xml.rels', relsXml);
 
       templateData = {
         report_date: reportDate,
@@ -501,6 +609,11 @@ export const downloadOfficialReport = async (req: Request, res: Response) => {
       };
     }
 
+    const doc = new Docxtemplater(zip, {
+      paragraphLoop: true,
+      linebreaks: true,
+      nullGetter: () => '',
+    });
     doc.render(templateData);
     applyDocxTypography(doc.getZip());
 
