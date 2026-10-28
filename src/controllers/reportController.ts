@@ -166,9 +166,9 @@ function applyDocxTypography(zip: PizZip): void {
         sect = sect.replace('<w:sectPr>', '<w:sectPr><w:pgSz w:w="12240" w:h="15840" w:orient="portrait"/>');
       }
       if (/<w:pgMar\b/.test(sect)) {
-        sect = sect.replace(/<w:pgMar\b[^/>]*(\/>|><\/w:pgMar>)/g, '<w:pgMar w:top="1440" w:right="1440" w:bottom="2000" w:left="1440" w:header="720" w:footer="500" w:gutter="0"/>');
+        sect = sect.replace(/<w:pgMar\b[^/>]*(\/>|><\/w:pgMar>)/g, '<w:pgMar w:top="1440" w:right="1440" w:bottom="2800" w:left="1440" w:header="720" w:footer="540" w:gutter="0"/>');
       } else {
-        sect = sect.replace('<w:sectPr>', '<w:sectPr><w:pgMar w:top="1440" w:right="1440" w:bottom="2000" w:left="1440" w:header="720" w:footer="500" w:gutter="0"/>');
+        sect = sect.replace('<w:sectPr>', '<w:sectPr><w:pgMar w:top="1440" w:right="1440" w:bottom="2800" w:left="1440" w:header="720" w:footer="540" w:gutter="0"/>');
       }
       return sect;
     });
@@ -348,9 +348,9 @@ export const downloadOfficialReport = async (req: Request, res: Response) => {
             }
 
             const cx = 2857500; // ~3.125 inches
-            const cy = 3400000; // ~3.7 inches (balanced portrait height allowing 1-page fit)
+            const cy = 2950000; // ~3.22 inches (balanced portrait height allowing 1-page fit with engraved footer)
 
-            procedurePhotoXml = `<w:tbl><w:tblPr><w:tblW w:w="9360" w:type="dxa"/><w:jc w:val="center"/><w:tblBorders><w:top w:val="none"/><w:left w:val="none"/><w:bottom w:val="none"/><w:right w:val="none"/><w:insideH w:val="none"/><w:insideV w:val="none"/></w:tblBorders><w:tblCellMar><w:top w:w="60" w:type="dxa"/><w:bottom w:w="60" w:type="dxa"/><w:left w:w="80" w:type="dxa"/><w:right w:w="80" w:type="dxa"/></w:tblCellMar></w:tblPr><w:tr><w:tc><w:tcPr><w:tcW w:w="4680" w:type="dxa"/><w:vAlign w:val="center"/></w:tcPr><w:p><w:pPr><w:jc w:val="center"/><w:spacing w:before="60" w:after="40"/></w:pPr><w:r>${makeDrawingXml(relId1, 1000 + idx * 2 + 1, 'Citizen Initial Incident Photo', cx, cy)}</w:r></w:p></w:tc><w:tc><w:tcPr><w:tcW w:w="4680" w:type="dxa"/><w:vAlign w:val="center"/></w:tcPr><w:p><w:pPr><w:jc w:val="center"/><w:spacing w:before="60" w:after="40"/></w:pPr><w:r>${makeDrawingXml(relId2, 1000 + idx * 2 + 2, 'Responder Procedure Photo', cx, cy)}</w:r></w:p></w:tc></w:tr></w:tbl><w:p><w:pPr><w:spacing w:after="120" w:line="240" w:lineRule="auto"/></w:pPr></w:p>`;
+            procedurePhotoXml = `<w:tbl><w:tblPr><w:tblW w:w="9360" w:type="dxa"/><w:jc w:val="center"/><w:tblBorders><w:top w:val="none"/><w:left w:val="none"/><w:bottom w:val="none"/><w:right w:val="none"/><w:insideH w:val="none"/><w:insideV w:val="none"/></w:tblBorders><w:tblCellMar><w:top w:w="40" w:type="dxa"/><w:bottom w:w="40" w:type="dxa"/><w:left w:w="60" w:type="dxa"/><w:right w:w="60" w:type="dxa"/></w:tblCellMar></w:tblPr><w:tr><w:tc><w:tcPr><w:tcW w:w="4680" w:type="dxa"/><w:vAlign w:val="center"/></w:tcPr><w:p><w:pPr><w:jc w:val="center"/><w:spacing w:before="40" w:after="20"/></w:pPr><w:r>${makeDrawingXml(relId1, 1000 + idx * 2 + 1, 'Citizen Initial Incident Photo', cx, cy)}</w:r></w:p></w:tc><w:tc><w:tcPr><w:tcW w:w="4680" w:type="dxa"/><w:vAlign w:val="center"/></w:tcPr><w:p><w:pPr><w:jc w:val="center"/><w:spacing w:before="40" w:after="20"/></w:pPr><w:r>${makeDrawingXml(relId2, 1000 + idx * 2 + 2, 'Responder Procedure Photo', cx, cy)}</w:r></w:p></w:tc></w:tr></w:tbl><w:p><w:pPr><w:spacing w:after="40" w:line="240" w:lineRule="auto"/></w:pPr></w:p>`;
           } else if (citizenPhotoData || procedurePhotoData) {
             // Only one photo exists: render single centered drawing
             const singlePhoto = citizenPhotoData || procedurePhotoData;
