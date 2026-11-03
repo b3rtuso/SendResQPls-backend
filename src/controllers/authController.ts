@@ -130,28 +130,65 @@ export const register = async (req: Request, res: Response) => {
 // POST /api/auth/login
 export const login = async (req: Request, res: Response) => {
   try {
-    const { email, password } = req.body;
+    const { email, password, username, identifier } = req.body;
+    const loginIdentifier = (identifier || username || email || '').trim();
 
-    const user = await prisma.user.findUnique({ where: { email } });
-    if (!user) {
-      return res.status(400).json({ error: 'Invalid email or password' });
+    if (!loginIdentifier || !password) {
+      return res.status(400).json({ error: 'Please enter your email, username, or full name, and password.' });
     }
+
+    // Search for candidates matching email, name/username, or phoneNumber (case-insensitive)
+    const candidates = await prisma.user.findMany({
+      where: {
+        OR: [
+          { email: { equals: loginIdentifier, mode: 'insensitive' } },
+          { name: { equals: loginIdentifier, mode: 'insensitive' } },
+          { phoneNumber: { equals: loginIdentifier } },
+        ],
+      },
+    });
+
+    if (!candidates || candidates.length === 0) {
+      return res.status(400).json({ error: 'Invalid credentials. Please check your email, username, or password.' });
+    }
+
+    // Match candidate by password
+    let matchedUser = null;
+    for (const candidate of candidates) {
+      const isPasswordValid = await bcrypt.compare(password, candidate.passwordHash);
+      if (isPasswordValid) {
+        matchedUser = candidate;
+        break;
+      }
+    }
+
+    if (!matchedUser) {
+      return res.status(400).json({ error: 'Invalid credentials. Please check your email, username, or password.' });
+    }
+
+    const user = matchedUser;
 
     // Block deactivated admin accounts
     if (!user.isActive) {
       return res.status(403).json({ error: 'This account has been deactivated. Please contact your administrator.' });
     }
 
-    const isPasswordValid = await bcrypt.compare(password, user.passwordHash);
-    if (!isPasswordValid) {
-      return res.status(400).json({ error: 'Invalid email or password' });
-    }
-
     const token = jwt.sign({ userId: user.id, role: user.role }, JWT_SECRET, { expiresIn: '7d' });
 
-    res.json({ message: 'Login successful', token, role: user.role, user: { id: user.id, name: user.name, email: user.email, phoneNumber: user.phoneNumber, role: user.role } });
+    res.json({
+      message: 'Login successful',
+      token,
+      role: user.role,
+      user: {
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        phoneNumber: user.phoneNumber,
+        role: user.role,
+      },
+    });
   } catch (error) {
-    console.error(error);
+    console.error('❌ Login error:', error);
     res.status(500).json({ error: 'Something went wrong during login.' });
   }
 };
