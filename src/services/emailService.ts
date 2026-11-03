@@ -167,11 +167,41 @@ async function sendEmail(
 ) {
   const config = getEmailConfig();
 
-  // 1. Try Gmail SMTP (Preferred: No tracking redirect domains, no timeout, fast delivery)
+  // 1. Primary: Brevo REST API (HTTPS port 443 — fast, reliable, never blocked by Render firewall)
+  if (config.apiKey) {
+    try {
+      const attachments = skipAttachments ? undefined : getEmailAttachments();
+      const payload: any = {
+        sender: { name: senderName, email: config.senderEmail },
+        to: [{ email: to }],
+        subject,
+        htmlContent,
+      };
+      if (attachments) payload.attachment = attachments;
+
+      const res = await axios.post('https://api.brevo.com/v3/smtp/email', payload, {
+        headers: { 'api-key': config.apiKey, 'Content-Type': 'application/json' },
+        timeout: 10000,
+      });
+      console.log(`✉️ [Brevo API] Email "${subject}" delivered instantly to: ${to} (id: ${res.data?.messageId})`);
+      return;
+    } catch (brevoErr: any) {
+      console.error('⚠️ [Brevo API] Delivery error:', brevoErr.response?.data?.message || brevoErr.message);
+      if (!config.isGmailConfigured) {
+        throw new Error(brevoErr.response?.data?.message || brevoErr.message);
+      }
+      console.log('🔄 Attempting fallback to Gmail SMTP...');
+    }
+  }
+
+  // 2. Fallback: Gmail SMTP (with strict 4s timeout so Render firewall never hangs)
   if (config.isGmailConfigured) {
     try {
       const transporter = nodemailer.createTransport({
         service: 'gmail',
+        connectionTimeout: 4000,
+        greetingTimeout: 4000,
+        socketTimeout: 5000,
         auth: {
           user: config.gmailUser,
           pass: config.gmailPass,
@@ -188,32 +218,11 @@ async function sendEmail(
       return;
     } catch (gmailErr: any) {
       console.error('⚠️ [Gmail SMTP] Delivery error:', gmailErr.message);
-      if (!config.apiKey) {
-        throw new Error(`Gmail delivery failed: ${gmailErr.message}`);
-      }
-      console.log('🔄 Attempting fallback to Brevo API...');
+      throw new Error(`Email delivery failed: ${gmailErr.message}`);
     }
   }
 
-  // 2. Brevo API Fallback
-  if (config.apiKey) {
-    const attachments = skipAttachments ? undefined : getEmailAttachments();
-    const payload: any = {
-      sender: { name: senderName, email: config.senderEmail },
-      to: [{ email: to }],
-      subject,
-      htmlContent,
-    };
-    if (attachments) payload.attachment = attachments;
-
-    await axios.post('https://api.brevo.com/v3/smtp/email', payload, {
-      headers: { 'api-key': config.apiKey, 'Content-Type': 'application/json' },
-    });
-    console.log(`✉️ [Brevo API] Email "${subject}" delivered to: ${to}`);
-    return;
-  }
-
-  throw new Error('No email provider configured. Please set GMAIL_APP_PASSWORD or BREVO_API_KEY.');
+  throw new Error('No email provider configured. Please set BREVO_API_KEY or GMAIL_APP_PASSWORD.');
 }
 
 // ----------------------------------------------------------------------------
