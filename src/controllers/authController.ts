@@ -374,14 +374,25 @@ export const forgotPassword = async (req: Request, res: Response) => {
 
     // Generate a secure random token
     const token = Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
+    const expiresAt = Date.now() + 30 * 60 * 1000;
 
-    // Store in Redis (survives restarts) or fallback to in-memory store
+    // 1. Store in Database (guarantees token survives Render free-tier sleep & restart cycles!)
+    try {
+      await prisma.user.update({
+        where: { id: user.id },
+        data: { otpCode: `RESET:${token}:${expiresAt}` },
+      });
+    } catch (dbErr: any) {
+      console.warn('⚠️ Could not save reset token to DB otpCode:', dbErr.message);
+    }
+
+    // 2. Store in Redis or fallback to in-memory store
     if (redis) {
-      await redis.set(`pwd_reset:${token}`, user.email, 'EX', 30 * 60);
+      await redis.set(`pwd_reset:${token}`, user.email, 'EX', 30 * 60).catch(() => {});
     } else {
       memoryPasswordResetTokens.set(token, {
         email: user.email,
-        expiresAt: Date.now() + 30 * 60 * 1000,
+        expiresAt,
       });
     }
 
@@ -389,8 +400,11 @@ export const forgotPassword = async (req: Request, res: Response) => {
     const baseUrl = getMobileAppUrl();
     const resetUrl = `${baseUrl}/reset-password?token=${token}`;
 
-    await sendPasswordResetEmail(user.email, user.name, resetUrl);
-    console.log(`📧 Password reset link sent to ${user.email}`);
+    // 3. Dispatch email asynchronously so client receives instant response (<200ms)
+    sendPasswordResetEmail(user.email, user.name, resetUrl)
+      .then(() => console.log(`📧 Password reset link sent to ${user.email}`))
+      .catch((mailErr: any) => console.error('❌ Async email send error:', mailErr.message));
+
     res.json({ message: 'Password reset link has been sent to your email.' });
   } catch (error: any) {
     console.error('❌ Forgot password error:', error.message);
@@ -409,14 +423,32 @@ export const resetPassword = async (req: Request, res: Response) => {
       return res.status(400).json({ error: passCheck.error });
     }
 
-    // Fetch email from Redis or in-memory fallback
+    // Fetch email from Redis, in-memory store, or PostgreSQL database (survives restarts)
     let email: string | null = null;
     if (redis) {
-      email = await redis.get(`pwd_reset:${token}`);
-    } else {
+      email = await redis.get(`pwd_reset:${token}`).catch(() => null);
+    }
+    if (!email) {
       const record = memoryPasswordResetTokens.get(token);
       if (record && record.expiresAt > Date.now()) {
         email = record.email;
+      }
+    }
+    // Database fallback (guarantees survival through Render restarts / cold starts)
+    if (!email) {
+      const userWithToken = await prisma.user.findFirst({
+        where: {
+          otpCode: {
+            startsWith: `RESET:${token}:`,
+          },
+        },
+      });
+      if (userWithToken && userWithToken.email && userWithToken.otpCode) {
+        const parts = userWithToken.otpCode.split(':');
+        const tokenExpires = parseInt(parts[2], 10);
+        if (!isNaN(tokenExpires) && tokenExpires > Date.now()) {
+          email = userWithToken.email;
+        }
       }
     }
 
@@ -425,15 +457,17 @@ export const resetPassword = async (req: Request, res: Response) => {
     const newHash = await bcrypt.hash(newPassword, 10);
     await prisma.user.update({
       where: { email },
-      data: { passwordHash: newHash },
+      data: {
+        passwordHash: newHash,
+        otpCode: null, // Clear one-time token immediately upon reset
+      },
     });
 
     // Delete the token immediately — one-time use
     if (redis) {
-      await redis.del(`pwd_reset:${token}`);
-    } else {
-      memoryPasswordResetTokens.delete(token);
+      await redis.del(`pwd_reset:${token}`).catch(() => {});
     }
+    memoryPasswordResetTokens.delete(token);
 
     res.json({ message: 'Password reset successfully. You can now log in.' });
   } catch (error: any) {
