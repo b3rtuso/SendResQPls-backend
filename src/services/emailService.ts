@@ -1,13 +1,26 @@
 import axios from 'axios';
 import fs from 'fs';
 import path from 'path';
+import nodemailer from 'nodemailer';
 
-// --- Brevo Config -----------------------------------------------------------
-function getBrevoConfig() {
+// --- Email Config (Gmail SMTP preferred, Brevo API fallback) -----------------
+function getEmailConfig() {
   const apiKey = process.env.BREVO_API_KEY;
-  const senderEmail = process.env.SYSTEM_EMAIL?.trim().replace(/"/g, '') || 'bertingmagiting16@gmail.com';
-  if (!apiKey) console.error('[Config Error] BREVO_API_KEY is not set in environment variables!');
-  return { apiKey, senderEmail };
+  const gmailUser =
+    process.env.GMAIL_USER?.trim().replace(/"/g, '') ||
+    process.env.SYSTEM_EMAIL?.trim().replace(/"/g, '') ||
+    'bertingmagiting16@gmail.com';
+  const rawPass = process.env.GMAIL_APP_PASSWORD || process.env.GMAIL_PASSWORD;
+  const gmailPass = rawPass ? rawPass.trim().replace(/"/g, '').replace(/\s+/g, '') : undefined;
+  const senderEmail = gmailUser;
+
+  const isGmailConfigured = Boolean(gmailUser && gmailPass);
+
+  if (!isGmailConfigured && !apiKey) {
+    console.error('[Config Error] Neither GMAIL_APP_PASSWORD nor BREVO_API_KEY is set in environment variables!');
+  }
+
+  return { apiKey, senderEmail, gmailUser, gmailPass, isGmailConfigured };
 }
 
 // --- Logo Loader ------------------------------------------------------------
@@ -146,34 +159,71 @@ function renderEmailLayout(title: string, contentHtml: string): string {
 
 // --- Send helper ------------------------------------------------------------
 async function sendEmail(
-  apiKey: string,
   senderName: string,
-  senderEmail: string,
   to: string,
   subject: string,
   htmlContent: string,
   skipAttachments = true,
 ) {
-  const attachments = skipAttachments ? undefined : getEmailAttachments();
-  const payload: any = {
-    sender: { name: senderName, email: senderEmail },
-    to: [{ email: to }],
-    subject,
-    htmlContent,
-  };
-  if (attachments) payload.attachment = attachments;
+  const config = getEmailConfig();
 
-  await axios.post('https://api.brevo.com/v3/smtp/email', payload, {
-    headers: { 'api-key': apiKey, 'Content-Type': 'application/json' },
-  });
+  // 1. Try Gmail SMTP (Preferred: No tracking redirect domains, no timeout, fast delivery)
+  if (config.isGmailConfigured) {
+    try {
+      const transporter = nodemailer.createTransport({
+        service: 'gmail',
+        auth: {
+          user: config.gmailUser,
+          pass: config.gmailPass,
+        },
+      });
+
+      await transporter.sendMail({
+        from: `"${senderName}" <${config.gmailUser}>`,
+        to,
+        subject,
+        html: htmlContent,
+      });
+      console.log(`✉️ [Gmail SMTP] Email "${subject}" delivered to: ${to}`);
+      return;
+    } catch (gmailErr: any) {
+      console.error('⚠️ [Gmail SMTP] Delivery error:', gmailErr.message);
+      if (!config.apiKey) {
+        throw new Error(`Gmail delivery failed: ${gmailErr.message}`);
+      }
+      console.log('🔄 Attempting fallback to Brevo API...');
+    }
+  }
+
+  // 2. Brevo API Fallback
+  if (config.apiKey) {
+    const attachments = skipAttachments ? undefined : getEmailAttachments();
+    const payload: any = {
+      sender: { name: senderName, email: config.senderEmail },
+      to: [{ email: to }],
+      subject,
+      htmlContent,
+    };
+    if (attachments) payload.attachment = attachments;
+
+    await axios.post('https://api.brevo.com/v3/smtp/email', payload, {
+      headers: { 'api-key': config.apiKey, 'Content-Type': 'application/json' },
+    });
+    console.log(`✉️ [Brevo API] Email "${subject}" delivered to: ${to}`);
+    return;
+  }
+
+  throw new Error('No email provider configured. Please set GMAIL_APP_PASSWORD or BREVO_API_KEY.');
 }
 
 // ----------------------------------------------------------------------------
 // EMAIL 1 - Verification Code (Matches Status Update Master Design)
 // ----------------------------------------------------------------------------
 export const sendVerificationEmail = async (to: string, code: string) => {
-  const { apiKey, senderEmail } = getBrevoConfig();
-  if (!apiKey) throw new Error('BREVO_API_KEY is missing');
+  const config = getEmailConfig();
+  if (!config.isGmailConfigured && !config.apiKey) {
+    throw new Error('Email service is not configured (missing GMAIL_APP_PASSWORD or BREVO_API_KEY)');
+  }
 
   const content = `
     <p style="margin:0 0 4px; color:#94A3B8; font-size:12px; font-weight:600;
@@ -237,9 +287,7 @@ export const sendVerificationEmail = async (to: string, code: string) => {
 
   try {
     await sendEmail(
-      apiKey,
       'SendResQPls',
-      senderEmail,
       to,
       `${code} is your SendResQPls verification code`,
       html,
@@ -358,14 +406,14 @@ export const sendStatusNotification = async (
     </p>
   `;
 
-  const { apiKey, senderEmail } = getBrevoConfig();
-  if (!apiKey) throw new Error('BREVO_API_KEY is missing');
+  const config = getEmailConfig();
+  if (!config.isGmailConfigured && !config.apiKey) {
+    throw new Error('Email service is not configured (missing GMAIL_APP_PASSWORD or BREVO_API_KEY)');
+  }
 
   try {
     await sendEmail(
-      apiKey,
       'MDRRMO Balayan Dispatch',
-      senderEmail,
       to,
       `[${newStatus}] Emergency Report Update - ${incidentType}`,
       renderEmailLayout(`Incident Update - ${incidentType}`, content),
@@ -379,8 +427,10 @@ export const sendStatusNotification = async (
 // EMAIL 3 - Password Reset
 // ----------------------------------------------------------------------------
 export const sendPasswordResetEmail = async (to: string, name: string, resetUrl: string) => {
-  const { apiKey, senderEmail } = getBrevoConfig();
-  if (!apiKey) throw new Error('BREVO_API_KEY is missing');
+  const config = getEmailConfig();
+  if (!config.isGmailConfigured && !config.apiKey) {
+    throw new Error('Email service is not configured (missing GMAIL_APP_PASSWORD or BREVO_API_KEY)');
+  }
 
   const content = `
     <p style="margin:0 0 4px; color:#94A3B8; font-size:12px; font-weight:600;
@@ -442,9 +492,7 @@ export const sendPasswordResetEmail = async (to: string, name: string, resetUrl:
 
   try {
     await sendEmail(
-      apiKey,
       'SendResQPls',
-      senderEmail,
       to,
       'Reset Your SendResQPls Password',
       html,

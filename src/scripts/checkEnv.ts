@@ -76,21 +76,34 @@ function checkJwt() {
   }
 }
 
-async function checkBrevo() {
-  const key = process.env.BREVO_API_KEY;
-  if (!key) {
+async function checkEmailService() {
+  const gmailPass = (process.env.GMAIL_APP_PASSWORD || process.env.GMAIL_PASSWORD)?.trim().replace(/\s+/g, '');
+  const gmailUser = process.env.GMAIL_USER || process.env.SYSTEM_EMAIL || 'bertingmagiting16@gmail.com';
+  const brevoKey = process.env.BREVO_API_KEY;
+
+  if (gmailPass) {
     results.push({
-      service: 'Email Delivery (Brevo)',
-      key: 'BREVO_API_KEY',
+      service: 'Email Delivery (Gmail SMTP)',
+      key: 'GMAIL_APP_PASSWORD',
+      status: 'OK',
+      details: `Configured for ${gmailUser}. Direct email delivery enabled (no tracking proxy).`
+    });
+    return;
+  }
+
+  if (!brevoKey) {
+    results.push({
+      service: 'Email Delivery',
+      key: 'GMAIL_APP_PASSWORD / BREVO_API_KEY',
       status: 'ERROR',
-      details: 'Missing. OTP emails and password resets will fail.'
+      details: 'Neither GMAIL_APP_PASSWORD nor BREVO_API_KEY is configured. OTP and reset emails will fail.'
     });
     return;
   }
 
   try {
     const res = await axios.get('https://api.brevo.com/v3/account', {
-      headers: { 'api-key': key }
+      headers: { 'api-key': brevoKey }
     });
     const sender = process.env.SYSTEM_EMAIL || 'not set';
     results.push({
@@ -280,7 +293,7 @@ async function runDiagnostic() {
 
   await checkDatabase();
   checkJwt();
-  await checkBrevo();
+  await checkEmailService();
   await checkCloudinary();
   await checkGemini();
   checkFirebase();
