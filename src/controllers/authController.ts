@@ -347,9 +347,9 @@ export function getMobileAppUrl(): string {
   return clean;
 }
 
-// ── Password Reset — tokens stored in Redis (survives server restarts) ────────
+// ── Password Reset — 6-digit OTP & tokens (survives server restarts) ──────────
 
-// POST /api/auth/forgot-password — Send password reset link to email
+// POST /api/auth/forgot-password — Send 6-digit password reset code to email
 export const forgotPassword = async (req: Request, res: Response) => {
   try {
     const { email } = req.body;
@@ -372,104 +372,172 @@ export const forgotPassword = async (req: Request, res: Response) => {
       return res.status(404).json({ error: 'This email is not registered in our database.' });
     }
 
-    // Generate a secure random token
+    // Generate a secure 6-digit OTP code and random fallback token
+    const code = Math.floor(100000 + Math.random() * 900000).toString();
     const token = Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
-    const expiresAt = Date.now() + 30 * 60 * 1000;
+    const expiresAt = Date.now() + 15 * 60 * 1000; // 15 minutes
 
-    // 1. Store in Database (guarantees token survives Render free-tier sleep & restart cycles!)
+    // 1. Store in Database (guarantees code survives Render free-tier sleep & restart cycles!)
     try {
       await prisma.user.update({
         where: { id: user.id },
-        data: { otpCode: `RESET:${token}:${expiresAt}` },
+        data: { otpCode: `RESET_OTP:${code}:${expiresAt}:${token}` },
       });
     } catch (dbErr: any) {
-      console.warn('⚠️ Could not save reset token to DB otpCode:', dbErr.message);
+      console.warn('⚠️ Could not save reset code to DB otpCode:', dbErr.message);
     }
 
     // 2. Store in Redis or fallback to in-memory store
     if (redis) {
-      await redis.set(`pwd_reset:${token}`, user.email, 'EX', 30 * 60).catch(() => {});
+      await redis.set(`pwd_reset_otp:${cleanEmail.toLowerCase()}`, code, 'EX', 15 * 60).catch(() => {});
+      await redis.set(`pwd_reset:${token}`, cleanEmail.toLowerCase(), 'EX', 15 * 60).catch(() => {});
     } else {
+      memoryPasswordResetTokens.set(`otp:${cleanEmail.toLowerCase()}`, {
+        email: cleanEmail,
+        code,
+        expiresAt,
+      });
       memoryPasswordResetTokens.set(token, {
-        email: user.email,
+        email: cleanEmail,
         expiresAt,
       });
     }
 
-    // Build reset URL — uses sanitized single mobile URL to completely bypass any stale cached /mobile redirects
-    const baseUrl = getMobileAppUrl();
-    const resetUrl = `${baseUrl}/reset-password?token=${token}`;
-
-    // 3. Dispatch email asynchronously so client receives instant response (<200ms)
-    sendPasswordResetEmail(user.email, user.name, resetUrl)
-      .then(() => console.log(`📧 Password reset link sent to ${user.email}`))
+    // 3. Dispatch clean 6-digit OTP email asynchronously (<200ms API response)
+    sendPasswordResetEmail(user.email, user.name, code)
+      .then(() => console.log(`📧 6-digit password reset code sent to ${user.email}`))
       .catch((mailErr: any) => console.error('❌ Async email send error:', mailErr.message));
 
-    res.json({ message: 'Password reset link has been sent to your email.' });
+    res.json({ message: 'A 6-digit password reset code has been sent to your email.' });
   } catch (error: any) {
     console.error('❌ Forgot password error:', error.message);
-    res.status(500).json({ error: 'Failed to send reset email' });
+    res.status(500).json({ error: 'Failed to send reset code' });
   }
 };
 
-// POST /api/auth/reset-password — Apply new password using token
+// POST /api/auth/reset-password — Apply new password using 6-digit code or token
 export const resetPassword = async (req: Request, res: Response) => {
   try {
-    const { token, newPassword } = req.body;
-    if (!token || !newPassword) return res.status(400).json({ error: 'Token and new password are required' });
+    const { token, code, otp, email, newPassword } = req.body;
+    if (!newPassword) return res.status(400).json({ error: 'New password is required' });
 
     const passCheck = validatePassword(newPassword);
     if (!passCheck.valid) {
       return res.status(400).json({ error: passCheck.error });
     }
 
-    // Fetch email from Redis, in-memory store, or PostgreSQL database (survives restarts)
-    let email: string | null = null;
-    if (redis) {
-      email = await redis.get(`pwd_reset:${token}`).catch(() => null);
-    }
-    if (!email) {
-      const record = memoryPasswordResetTokens.get(token);
-      if (record && record.expiresAt > Date.now()) {
-        email = record.email;
+    // Mode A: 6-Digit OTP Code (Primary & Most Reliable)
+    const resetCode = (code || otp || '').toString().trim().replace(/\D/g, '');
+    if (resetCode && email) {
+      if (resetCode.length !== 6) {
+        return res.status(400).json({ error: 'Please enter a valid 6-digit reset code.' });
       }
-    }
-    // Database fallback (guarantees survival through Render restarts / cold starts)
-    if (!email) {
-      const userWithToken = await prisma.user.findFirst({
+
+      const cleanEmail = email.trim();
+      const user = await prisma.user.findFirst({
         where: {
-          otpCode: {
-            startsWith: `RESET:${token}:`,
-          },
+          email: { equals: cleanEmail, mode: 'insensitive' },
         },
       });
-      if (userWithToken && userWithToken.email && userWithToken.otpCode) {
-        const parts = userWithToken.otpCode.split(':');
+
+      if (!user) {
+        return res.status(404).json({ error: 'Account not found for this email address.' });
+      }
+
+      let valid = false;
+      if (user.otpCode && user.otpCode.startsWith(`RESET_OTP:${resetCode}:`)) {
+        const parts = user.otpCode.split(':');
         const tokenExpires = parseInt(parts[2], 10);
         if (!isNaN(tokenExpires) && tokenExpires > Date.now()) {
-          email = userWithToken.email;
+          valid = true;
         }
       }
+
+      if (!valid && redis) {
+        const cachedCode = await redis.get(`pwd_reset_otp:${cleanEmail.toLowerCase()}`).catch(() => null);
+        if (cachedCode && cachedCode === resetCode) valid = true;
+      }
+
+      if (!valid) {
+        const memRec = memoryPasswordResetTokens.get(`otp:${cleanEmail.toLowerCase()}`);
+        if (memRec && memRec.code === resetCode && memRec.expiresAt > Date.now()) {
+          valid = true;
+        }
+      }
+
+      if (!valid) {
+        return res.status(400).json({ error: 'Invalid or expired 6-digit reset code. Please check your email or request a new code.' });
+      }
+
+      const newHash = await bcrypt.hash(newPassword, 10);
+      await prisma.user.update({
+        where: { id: user.id },
+        data: {
+          passwordHash: newHash,
+          otpCode: null, // Clear code immediately upon successful reset
+        },
+      });
+
+      if (redis) {
+        await redis.del(`pwd_reset_otp:${cleanEmail.toLowerCase()}`).catch(() => {});
+      }
+      memoryPasswordResetTokens.delete(`otp:${cleanEmail.toLowerCase()}`);
+
+      return res.json({ message: 'Password reset successfully. You can now log in.' });
     }
 
-    if (!email) return res.status(400).json({ error: 'Invalid or expired reset link. Please request a new one.' });
+    // Mode B: Legacy Token in URL
+    if (token) {
+      let targetEmail: string | null = null;
+      if (redis) {
+        targetEmail = await redis.get(`pwd_reset:${token}`).catch(() => null);
+      }
+      if (!targetEmail) {
+        const record = memoryPasswordResetTokens.get(token);
+        if (record && record.expiresAt > Date.now()) {
+          targetEmail = record.email;
+        }
+      }
+      if (!targetEmail) {
+        const userWithToken = await prisma.user.findFirst({
+          where: {
+            OR: [
+              { otpCode: { startsWith: `RESET:${token}:` } },
+              { otpCode: { contains: `:${token}` } },
+            ],
+          },
+        });
+        if (userWithToken && userWithToken.email && userWithToken.otpCode) {
+          const parts = userWithToken.otpCode.split(':');
+          const tokenExpires = parseInt(parts[2], 10);
+          if (!isNaN(tokenExpires) && tokenExpires > Date.now()) {
+            targetEmail = userWithToken.email;
+          }
+        }
+      }
 
-    const newHash = await bcrypt.hash(newPassword, 10);
-    await prisma.user.update({
-      where: { email },
-      data: {
-        passwordHash: newHash,
-        otpCode: null, // Clear one-time token immediately upon reset
-      },
-    });
+      if (!targetEmail) {
+        return res.status(400).json({ error: 'Invalid or expired reset link. Please request a new one.' });
+      }
 
-    // Delete the token immediately — one-time use
-    if (redis) {
-      await redis.del(`pwd_reset:${token}`).catch(() => {});
+      const newHash = await bcrypt.hash(newPassword, 10);
+      await prisma.user.update({
+        where: { email: targetEmail },
+        data: {
+          passwordHash: newHash,
+          otpCode: null,
+        },
+      });
+
+      if (redis) {
+        await redis.del(`pwd_reset:${token}`).catch(() => {});
+      }
+      memoryPasswordResetTokens.delete(token);
+
+      return res.json({ message: 'Password reset successfully. You can now log in.' });
     }
-    memoryPasswordResetTokens.delete(token);
 
-    res.json({ message: 'Password reset successfully. You can now log in.' });
+    return res.status(400).json({ error: 'Please provide either a 6-digit reset code or reset token.' });
   } catch (error: any) {
     console.error('❌ Reset password error:', error.message);
     res.status(500).json({ error: 'Failed to reset password' });

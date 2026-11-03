@@ -424,9 +424,9 @@ export const sendStatusNotification = async (
 };
 
 // ----------------------------------------------------------------------------
-// EMAIL 3 - Password Reset
+// EMAIL 3 - Password Reset (6-Digit OTP Code — Immune to Link Tracking Timeouts)
 // ----------------------------------------------------------------------------
-export const sendPasswordResetEmail = async (to: string, name: string, resetUrl: string) => {
+export const sendPasswordResetEmail = async (to: string, name: string, code: string) => {
   const config = getEmailConfig();
   if (!config.isGmailConfigured && !config.apiKey) {
     throw new Error('Email service is not configured (missing GMAIL_APP_PASSWORD or BREVO_API_KEY)');
@@ -435,57 +435,62 @@ export const sendPasswordResetEmail = async (to: string, name: string, resetUrl:
   const content = `
     <p style="margin:0 0 4px; color:#94A3B8; font-size:12px; font-weight:600;
               text-transform:uppercase; letter-spacing:0.8px;">
-      Account Security
+      Account Recovery
     </p>
     <h2 style="margin:0 0 16px; color:#0A1931; font-size:22px; font-weight:800; line-height:1.25;">
-      Reset Your Password
+      Password Reset Code
     </h2>
     <p style="margin:0 0 6px; color:#475569; font-size:14px; line-height:1.65;">
       Hello <strong style="color:#0A1931;">${name || 'Citizen'}</strong>,
     </p>
     <p style="margin:0 0 24px; color:#64748B; font-size:13.5px; line-height:1.6;">
-      We received a request to reset your SendResQPls account password. Click the button below to choose a new password. After resetting, open the SendResQPls mobile app to log in:
+      Enter this 6-digit verification code in the <strong>SendResQPls</strong> app to reset your password:
     </p>
 
-    <!-- CTA Button -->
+    <!-- Verification Code Card (Clean OTP: No links, no redirect proxies) -->
     <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:24px;">
       <tr>
-        <td align="center">
-          <a href="${resetUrl}"
-             target="_blank"
-             style="display:inline-block; background-color:#1D4ED8;
-                    color:#FFFFFF; padding:14px 32px; border-radius:12px;
-                    text-decoration:none; font-weight:700; font-size:14px;
-                    letter-spacing:0.2px; box-shadow:0 4px 14px rgba(29,78,216,0.3);">
-            Reset My Password
-          </a>
+        <td style="border:1px solid #E2E8F0; border-radius:14px; overflow:hidden;">
+
+          <!-- Card Header -->
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+            <tr>
+              <td style="background-color:#1A3FA3; padding:12px 18px;">
+                <span style="color:#FFFFFF; font-size:11px; font-weight:800; letter-spacing:0.8px; text-transform:uppercase;">
+                  Password Reset Code (OTP)
+                </span>
+              </td>
+            </tr>
+          </table>
+
+          <!-- Card Body -->
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+            <tr>
+              <td style="padding:28px 20px; text-align:center; background-color:#F8FAFC;">
+                <div style="font-size:42px; font-weight:800; letter-spacing:10px; color:#0F172A; font-family:'Courier New', Courier, monospace; padding-left:10px; line-height:1;">
+                  ${code}
+                </div>
+              </td>
+            </tr>
+            <tr>
+              <td style="height:1px; background-color:#E2E8F0; line-height:1px; font-size:1px;">&nbsp;</td>
+            </tr>
+            <tr>
+              <td style="padding:14px 18px; text-align:center; background-color:#FFFFFF;">
+                <span style="color:#DC2626; font-size:13px; font-weight:700;">
+                  This code expires in 15 minutes
+                </span>
+              </td>
+            </tr>
+          </table>
+
         </td>
       </tr>
     </table>
 
-    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:20px;">
-      <tr>
-        <td style="text-align:center;">
-          <span style="color:#DC2626; font-size:12.5px; font-weight:700;">
-            This link expires in 30 minutes
-          </span>
-        </td>
-      </tr>
-    </table>
-
-    <p style="margin:0 0 16px; color:#94A3B8; font-size:12px; line-height:1.45;">
-      After resetting your password, return to the <strong>SendResQPls mobile app</strong> on your device to log in. If you did not request a password reset, you can safely ignore this email — your account remains secure.
+    <p style="margin:0; color:#94A3B8; font-size:12px; line-height:1.55;">
+      Return to the <strong>SendResQPls mobile app</strong> on your device and enter this code along with your new password. If you did not request a password reset, you can safely ignore this email — your account remains completely secure.
     </p>
-
-    <!-- Fallback Link -->
-    <div style="border-top:1px solid #E2E8F0; padding-top:14px; text-align:left;">
-      <p style="margin:0 0 4px; color:#94A3B8; font-size:11px;">
-        Button not working? Copy and paste this URL into your browser:
-      </p>
-      <a href="${resetUrl}" style="color:#1D4ED8; font-size:11px; word-break:break-all; text-decoration:underline;">
-        ${resetUrl}
-      </a>
-    </div>
   `;
 
   const html = renderEmailLayout('SendResQPls - Reset Your Password', content);
@@ -494,7 +499,7 @@ export const sendPasswordResetEmail = async (to: string, name: string, resetUrl:
     await sendEmail(
       'SendResQPls',
       to,
-      'Reset Your SendResQPls Password',
+      `${code} is your SendResQPls password reset code`,
       html,
     );
   } catch (err: any) {
