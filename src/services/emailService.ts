@@ -167,7 +167,7 @@ async function sendEmail(
 ) {
   const config = getEmailConfig();
 
-  // 1. Primary: Brevo REST API (HTTPS port 443 — fast, reliable, never blocked by Render firewall)
+  // 1. Primary: Brevo REST API (HTTPS port 443 — lightning-fast ~700ms, never tarpitted by Google SMTP)
   if (config.apiKey) {
     try {
       const attachments = skipAttachments ? undefined : getEmailAttachments();
@@ -181,12 +181,12 @@ async function sendEmail(
 
       const res = await axios.post('https://api.brevo.com/v3/smtp/email', payload, {
         headers: { 'api-key': config.apiKey, 'Content-Type': 'application/json' },
-        timeout: 10000,
+        timeout: 5000,
       });
       console.log(`✉️ [Brevo API] Email "${subject}" delivered instantly to: ${to} (id: ${res.data?.messageId})`);
       return;
     } catch (brevoErr: any) {
-      console.error('⚠️ [Brevo API] Delivery error:', brevoErr.response?.data?.message || brevoErr.message);
+      console.warn('⚠️ [Brevo API] Delivery error:', brevoErr.response?.data?.message || brevoErr.message);
       if (!config.isGmailConfigured) {
         throw new Error(brevoErr.response?.data?.message || brevoErr.message);
       }
@@ -194,19 +194,21 @@ async function sendEmail(
     }
   }
 
-  // 2. Fallback: Gmail SMTP (with strict 4s timeout so Render firewall never hangs)
+  // 2. Fallback: Gmail SMTP (Strict 3s timeout to protect against Google 421 tarpitting)
   if (config.isGmailConfigured) {
     try {
       const transporter = nodemailer.createTransport({
-        service: 'gmail',
-        connectionTimeout: 4000,
-        greetingTimeout: 4000,
-        socketTimeout: 5000,
+        host: 'smtp.gmail.com',
+        port: 465,
+        secure: true,
+        connectionTimeout: 3000,
+        greetingTimeout: 3000,
+        socketTimeout: 4000,
         auth: {
           user: config.gmailUser,
           pass: config.gmailPass,
         },
-      });
+      } as any);
 
       await transporter.sendMail({
         from: `"${senderName}" <${config.gmailUser}>`,
