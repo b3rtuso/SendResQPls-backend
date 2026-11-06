@@ -401,14 +401,15 @@ export const updateIncidentStatus = async (req: AuthRequest, res: Response) => {
     if (!current) return res.status(404).json({ error: 'Incident not found' });
 
     const data: any = {};
-    if (adminNotes !== undefined) data.adminNotes = adminNotes;
+    if (adminNotes !== undefined) data.adminNotes = adminNotes ? adminNotes.trim() : null;
     if (assignedDepartment !== undefined) data.assignedDepartment = assignedDepartment;
     if (severity) data.severity = severity;
     if (urgencyScore !== undefined) data.urgencyScore = parseInt(urgencyScore);
     if (aiDetectedType !== undefined) data.aiDetectedType = aiDetectedType;
 
     // ── One-way status progression guard ─────────────────────────────────────
-    if (status) {
+    const isStatusChanging = Boolean(status && status !== current.status);
+    if (isStatusChanging) {
       const STATUS_ORDER = ['PENDING', 'REVIEWING', 'DISPATCHED', 'RESOLVED'];
 
       const currentIdx = STATUS_ORDER.indexOf(current.status);
@@ -458,11 +459,12 @@ export const updateIncidentStatus = async (req: AuthRequest, res: Response) => {
       });
     }
 
-    if (adminNotes && current.adminNotes !== adminNotes) {
+    const normalizedNewNotes = adminNotes !== undefined ? (adminNotes ? adminNotes.trim() : null) : undefined;
+    if (normalizedNewNotes !== undefined && current.adminNotes !== normalizedNewNotes) {
       await prisma.incidentActivity.create({
         data: {
           incidentId: id,
-          title: `Admin note: "${adminNotes}"`,
+          title: normalizedNewNotes ? `Admin note: "${normalizedNewNotes}"` : 'Admin note removed',
           type: 'ADMIN_NOTE',
         },
       });
@@ -530,7 +532,7 @@ export const updateIncidentStatus = async (req: AuthRequest, res: Response) => {
     console.log(`📋 Incident ${id}: ${actions.join(', ') || 'updated'}`);
 
     // Send email notification to the reporter when status changes
-    if (status && updated.reporter?.email) {
+    if (isStatusChanging && updated.reporter?.email) {
       try {
         await sendStatusNotification(
           updated.reporter.email,
@@ -551,11 +553,12 @@ export const updateIncidentStatus = async (req: AuthRequest, res: Response) => {
         let title = 'Update sa iyong Report! 🚨';
         let body = '';
 
-        if (status && assignedDepartment) {
+        const isDeptChanging = Boolean(assignedDepartment && current.assignedDepartment !== assignedDepartment);
+        if (isStatusChanging && isDeptChanging) {
           body = `Ang report mo ay na-assign sa ${assignedDepartment} at ito ay: ${getTagalogStatus(status)}`;
-        } else if (status) {
+        } else if (isStatusChanging) {
           body = `Ang status ng iyong report ay: ${getTagalogStatus(status)}`;
-        } else if (assignedDepartment) {
+        } else if (isDeptChanging) {
           title = 'Naka-assign na ang iyong Report! 🚒';
           body = `Ang report mo ay na-assign na sa ${assignedDepartment}`;
         }
