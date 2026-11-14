@@ -123,7 +123,7 @@ async function seedDefaultAdmin() {
           name: 'MDRRMO Balayan Admin',
           passwordHash: hashedPassword,
           role: 'ADMIN',
-          phoneNumber: '09171234567'
+          phoneNumber: '09066364019'
         }
       });
       console.log('✅ Default MDRRMO admin seeded successfully in database:');

@@ -121,7 +121,7 @@ function renderEmailLayout(title: string, contentHtml: string): string {
                     <span style="display:inline-block; background-color:#EEF2FF; color:#1A3FA3;
                                  border:1px solid #C7D7FD; font-size:11px; font-weight:800;
                                  padding:5px 13px; border-radius:99px; letter-spacing:0.6px;">
-                      MDRRMO: 0917-123-4567
+                      MDRRMO: 0906-636-4019
                     </span>
                   </td>
                 </tr>
