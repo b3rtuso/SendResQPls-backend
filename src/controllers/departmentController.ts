@@ -54,6 +54,20 @@ const defaultDepartments = [
   },
 ];
 
+const DEPARTMENT_CONTACT_REGEX = /^\d{11}$/;
+
+/** Validates that a department contact string consists of strictly 11 numeric digits. */
+function validateDepartmentContact(contact: unknown): { valid: boolean; value: string; error?: string } {
+  if (typeof contact !== 'string') {
+    return { valid: false, value: '', error: 'Contact number must be strictly 11 numeric digits (e.g., 09066364019).' };
+  }
+  const trimmed = contact.trim();
+  if (!DEPARTMENT_CONTACT_REGEX.test(trimmed)) {
+    return { valid: false, value: trimmed, error: 'Contact number must contain strictly 11 numeric digits with no spaces, letters, or symbols.' };
+  }
+  return { valid: true, value: trimmed };
+}
+
 // Helper function to sync department status based on assigned incidents
 export async function syncDepartmentStatuses() {
   try {
@@ -130,22 +144,29 @@ export const createDepartment = async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'Missing required department fields' });
     }
 
+    const contactValidation = validateDepartmentContact(contact);
+    if (!contactValidation.valid) {
+      return res.status(400).json({ error: contactValidation.error });
+    }
+
+    const normalizedName = String(name).toUpperCase().trim();
+
     // Check if name is unique
     const existing = await prisma.departmentInfo.findUnique({
-      where: { name },
+      where: { name: normalizedName },
     });
     if (existing) {
-      return res.status(400).json({ error: `Department code '${name}' already exists` });
+      return res.status(400).json({ error: `Department code '${normalizedName}' already exists` });
     }
 
     const newDept = await prisma.departmentInfo.create({
       data: {
-        name: name.toUpperCase(),
-        fullName,
-        headOfficer,
-        contact,
-        email,
-        personnelCount: personnelCount ? parseInt(personnelCount.toString()) : 0,
+        name: normalizedName,
+        fullName: String(fullName).trim(),
+        headOfficer: String(headOfficer).trim(),
+        contact: contactValidation.value,
+        email: String(email).trim(),
+        personnelCount: personnelCount ? parseInt(personnelCount.toString(), 10) : 0,
         equipment: Array.isArray(equipment) ? equipment : [],
         status: status || 'Available',
       },
@@ -162,16 +183,33 @@ export const createDepartment = async (req: Request, res: Response) => {
 // PUT /api/departments/:id
 export const updateDepartment = async (req: Request, res: Response) => {
   try {
-    const { id } = req.params;
+    const id = String(req.params.id);
     const { name, fullName, headOfficer, contact, email, personnelCount, equipment, status } = req.body;
 
+    const existing = await prisma.departmentInfo.findUnique({ where: { id } });
+    if (!existing) {
+      return res.status(404).json({ error: 'Department not found' });
+    }
+
     const data: any = {};
-    if (name) data.name = name.toUpperCase();
-    if (fullName) data.fullName = fullName;
-    if (headOfficer) data.headOfficer = headOfficer;
-    if (contact) data.contact = contact;
-    if (email) data.email = email;
-    if (personnelCount !== undefined) data.personnelCount = parseInt(personnelCount.toString());
+    if (name) data.name = String(name).toUpperCase().trim();
+    if (fullName) data.fullName = String(fullName).trim();
+    if (headOfficer) data.headOfficer = String(headOfficer).trim();
+    if (contact !== undefined) {
+      const normalizedIncoming = typeof contact === 'string' ? contact.trim() : contact;
+      // Preserve legacy seeded landline numbers when unchanged, while strictly enforcing 11 digits on any new/modified value.
+      if (normalizedIncoming !== existing.contact) {
+        const contactValidation = validateDepartmentContact(contact);
+        if (!contactValidation.valid) {
+          return res.status(400).json({ error: contactValidation.error });
+        }
+        data.contact = contactValidation.value;
+      } else {
+        data.contact = existing.contact;
+      }
+    }
+    if (email) data.email = String(email).trim();
+    if (personnelCount !== undefined) data.personnelCount = parseInt(personnelCount.toString(), 10);
     if (equipment !== undefined) data.equipment = Array.isArray(equipment) ? equipment : [];
     if (status) data.status = status;
 
@@ -191,7 +229,7 @@ export const updateDepartment = async (req: Request, res: Response) => {
 // DELETE /api/departments/:id
 export const deleteDepartment = async (req: Request, res: Response) => {
   try {
-    const { id } = req.params;
+    const id = String(req.params.id);
 
     const deletedDept = await prisma.departmentInfo.delete({
       where: { id },

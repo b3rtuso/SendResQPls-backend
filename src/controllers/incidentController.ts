@@ -396,9 +396,33 @@ export const updateIncidentStatus = async (req: AuthRequest, res: Response) => {
 
     const current = await prisma.incident.findUnique({
       where: { id },
-      select: { status: true, assignedDepartment: true, adminNotes: true, aiDetectedType: true },
+      select: {
+        status: true,
+        assignedDepartment: true,
+        adminNotes: true,
+        aiDetectedType: true,
+        lockedByAdminId: true,
+        lockedByAdminName: true,
+        lockedAt: true,
+      },
     });
     if (!current) return res.status(404).json({ error: 'Incident not found' });
+
+    const adminId = req.user!.userId;
+    const isLockedByOther = !!(
+      current.lockedByAdminId &&
+      current.lockedByAdminId !== adminId &&
+      current.lockedAt &&
+      (Date.now() - new Date(current.lockedAt).getTime() < LOCK_TIMEOUT_MS)
+    );
+    if (isLockedByOther) {
+      return res.status(423).json({
+        error: `This request is already in review by ${current.lockedByAdminName || 'another administrator'}.`,
+        lockedByAdminId: current.lockedByAdminId,
+        lockedByAdminName: current.lockedByAdminName,
+        lockedAt: current.lockedAt,
+      });
+    }
 
     const data: any = {};
     if (adminNotes !== undefined) data.adminNotes = adminNotes ? adminNotes.trim() : null;
@@ -749,45 +773,65 @@ const LOCK_TIMEOUT_MS = 3 * 60 * 1000; // 3-minute lease
  */
 export const lockIncident = async (req: AuthRequest, res: Response) => {
   try {
-    const { id } = req.params;
+    const id = req.params.id as string;
     const adminId = req.user!.userId;
 
-    const incident = await prisma.incident.findUnique({
-      where: { id },
-      select: {
-        id: true,
-        status: true,
-        lockedByAdminId: true,
-        lockedByAdminName: true,
-        lockedAt: true,
+    const adminUser = await prisma.user.findUnique({
+      where: { id: adminId },
+      select: { name: true },
+    });
+    const adminName = adminUser?.name || 'Admin';
+    const now = new Date();
+    const expiryThreshold = new Date(now.getTime() - LOCK_TIMEOUT_MS);
+
+    // Atomic "ticket-buying" claim: PostgreSQL row-level locking guarantees
+    // only ONE concurrent request can match and acquire the ticket.
+    const claimResult = await prisma.incident.updateMany({
+      where: {
+        id,
+        status: { notIn: ['RESOLVED', 'REJECTED'] },
+        OR: [
+          { lockedByAdminId: null },
+          { lockedByAdminId: adminId },
+          { lockedAt: null },
+          { lockedAt: { lt: expiryThreshold } },
+        ],
+      },
+      data: {
+        lockedByAdminId: adminId,
+        lockedByAdminName: adminName,
+        lockedAt: now,
       },
     });
 
-    if (!incident) {
-      return res.status(404).json({ error: 'Incident not found' });
-    }
-
-    // Finished incidents can be viewed by anyone without locks
-    if (incident.status === 'RESOLVED' || incident.status === 'REJECTED') {
-      return res.json({
-        success: true,
-        locked: false,
-        isDone: true,
-        status: incident.status,
+    if (claimResult.count === 0) {
+      const incident = await prisma.incident.findUnique({
+        where: { id },
+        select: {
+          id: true,
+          status: true,
+          lockedByAdminId: true,
+          lockedByAdminName: true,
+          lockedAt: true,
+        },
       });
-    }
 
-    // Check if actively locked by another admin within the last 3 minutes
-    const isLockedByOther = !!(
-      incident.lockedByAdminId &&
-      incident.lockedByAdminId !== adminId &&
-      incident.lockedAt &&
-      (Date.now() - new Date(incident.lockedAt).getTime() < LOCK_TIMEOUT_MS)
-    );
+      if (!incident) {
+        return res.status(404).json({ error: 'Incident not found' });
+      }
 
-    if (isLockedByOther) {
+      // Finished incidents can be viewed by anyone without locks
+      if (incident.status === 'RESOLVED' || incident.status === 'REJECTED') {
+        return res.json({
+          success: true,
+          locked: false,
+          isDone: true,
+          status: incident.status,
+        });
+      }
+
       return res.status(423).json({
-        error: `${incident.lockedByAdminName || 'Another administrator'} is currently working on this incident.`,
+        error: `This request is already in review by ${incident.lockedByAdminName || 'another administrator'}.`,
         lockedByAdminId: incident.lockedByAdminId,
         lockedByAdminName: incident.lockedByAdminName,
         lockedAt: incident.lockedAt,
@@ -795,31 +839,41 @@ export const lockIncident = async (req: AuthRequest, res: Response) => {
       });
     }
 
-    // Acquire or renew lock
-    const adminUser = await prisma.user.findUnique({
-      where: { id: adminId },
-      select: { name: true },
-    });
-    const adminName = adminUser?.name || 'Admin';
-    const now = new Date();
-
-    const updated = await prisma.incident.update({
-      where: { id },
-      data: {
+    // Atomically transition PENDING -> REVIEWING once the ticket is won
+    const statusTransition = await prisma.incident.updateMany({
+      where: {
+        id,
+        status: 'PENDING',
         lockedByAdminId: adminId,
-        lockedByAdminName: adminName,
-        lockedAt: now,
-        // When an admin opens a PENDING incident, automatically transition to REVIEWING
-        status: incident.status === 'PENDING' ? 'REVIEWING' : incident.status,
+      },
+      data: {
+        status: 'REVIEWING',
       },
     });
+
+    const latest = await prisma.incident.findUnique({
+      where: { id },
+      select: { status: true },
+    });
+    const currentStatus = latest?.status || 'REVIEWING';
+
+    if (statusTransition.count > 0) {
+      await prisma.incidentActivity.create({
+        data: {
+          incidentId: id,
+          title: `Status changed to REVIEWING`,
+          description: `Opened for review by ${adminName}`,
+          type: 'STATUS_CHANGE',
+        },
+      });
+    }
 
     broadcastSseEvent('incident_locked', {
       incidentId: id,
       lockedByAdminId: adminId,
       lockedByAdminName: adminName,
       lockedAt: now,
-      status: updated.status,
+      status: currentStatus,
     });
 
     console.log(`🔒 Incident ${id} locked by ${adminName} (${adminId})`);
@@ -829,7 +883,7 @@ export const lockIncident = async (req: AuthRequest, res: Response) => {
       lockedByAdminId: adminId,
       lockedByAdminName: adminName,
       lockedAt: now,
-      status: updated.status,
+      status: currentStatus,
     });
   } catch (error: any) {
     console.error('❌ lockIncident error:', error.message);

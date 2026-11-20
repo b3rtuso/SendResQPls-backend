@@ -6,13 +6,21 @@ import { prisma } from '../config/db';
  */
 export const getAnalyticsSummary = async (_req: Request, res: Response) => {
   try {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
+    // Compute local calendar day boundaries in Asia/Manila (UTC+8, no DST)
+    // so UTC-hosted servers (Render) align with Balayan local midnight.
+    const PHT_OFFSET_MS = 8 * 60 * 60 * 1000;
+    const nowPht = new Date(Date.now() + PHT_OFFSET_MS);
+    const todayStartUtc = new Date(
+      Date.UTC(nowPht.getUTCFullYear(), nowPht.getUTCMonth(), nowPht.getUTCDate()) - PHT_OFFSET_MS
+    );
+    const tomorrowStartUtc = new Date(todayStartUtc.getTime() + 24 * 60 * 60 * 1000);
 
-    const firstDayOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
-    const firstDayOfWeek = new Date(today);
-    const day = today.getDay();
-    firstDayOfWeek.setDate(today.getDate() - (day === 0 ? 6 : day - 1));
+    const firstDayOfMonth = new Date(
+      Date.UTC(nowPht.getUTCFullYear(), nowPht.getUTCMonth(), 1) - PHT_OFFSET_MS
+    );
+    const dayOfWeek = nowPht.getUTCDay();
+    const daysSinceMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
+    const firstDayOfWeek = new Date(todayStartUtc.getTime() - daysSinceMonday * 24 * 60 * 60 * 1000);
 
     const [
       statusCounts,
@@ -31,24 +39,24 @@ export const getAnalyticsSummary = async (_req: Request, res: Response) => {
       prisma.incident.count({
         where: {
           status: 'PENDING',
-          createdAt: { gte: today },
+          createdAt: { gte: todayStartUtc, lt: tomorrowStartUtc },
         },
       }),
       prisma.incident.count({
         where: {
           status: 'DISPATCHED',
-          updatedAt: { gte: today },
+          createdAt: { gte: todayStartUtc, lt: tomorrowStartUtc },
         },
       }),
       prisma.incident.count({
         where: {
           status: 'RESOLVED',
-          updatedAt: { gte: today },
+          createdAt: { gte: todayStartUtc, lt: tomorrowStartUtc },
         },
       }),
       prisma.incident.count({
         where: {
-          createdAt: { gte: today },
+          createdAt: { gte: todayStartUtc, lt: tomorrowStartUtc },
         },
       }),
       prisma.incident.count({
