@@ -96,10 +96,32 @@ export async function processIncidentDirectly(
 
   // ── 2. Update the incident record with AI results ─────────────────────────
   let adminNoteMsg: string | undefined = undefined;
+  const recaptureType = String(assessment.recaptureType || '').toUpperCase();
+  const reasonText = `${assessment.reasoning || ''} ${assessment.authenticityReasoning || ''}`.toLowerCase();
+
   if (isRecapture) {
-    adminNoteMsg = 'Photo may be taken from a screen or printed picture. Please verify with the reporter first.';
+    if (recaptureType === 'PRINTED_PHOTO' || reasonText.includes('print') || reasonText.includes('paper')) {
+      adminNoteMsg = 'Print recapture: Photo looks taken from a printed picture. Please check with the reporter.';
+    } else {
+      adminNoteMsg = 'Screen recapture: Photo looks taken from a screen. Please check with the reporter.';
+    }
   } else if (!aiRecognized) {
-    adminNoteMsg = 'Photo is unclear. Please check with the reporter.';
+    if (reasonText.includes('blur') || reasonText.includes('dark') || reasonText.includes('low light') || reasonText.includes('out of focus') || reasonText.includes('poor quality')) {
+      adminNoteMsg = 'Blurry photo: Image is too blurry or dark to see clearly. Please check with the reporter.';
+    } else if (
+      reasonText.includes('non-emergency') ||
+      reasonText.includes('not an emergency') ||
+      reasonText.includes('no emergency') ||
+      reasonText.includes('benign') ||
+      reasonText.includes('harmless') ||
+      reasonText.includes('meme') ||
+      reasonText.includes('selfie') ||
+      reasonText.includes('unrelated')
+    ) {
+      adminNoteMsg = 'Non-incident related: Photo does not show an emergency. Please check with the reporter.';
+    } else {
+      adminNoteMsg = 'Cannot identify: Could not tell what is in the photo. Please check with the reporter.';
+    }
   }
 
   const incident = await prisma.incident.update({
