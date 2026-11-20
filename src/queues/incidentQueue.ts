@@ -97,11 +97,9 @@ export async function processIncidentDirectly(
   // ── 2. Update the incident record with AI results ─────────────────────────
   let adminNoteMsg: string | undefined = undefined;
   if (isRecapture) {
-    adminNoteMsg = `⚠️ SUSPECTED RECAPTURE (${assessment.recaptureType || 'SCREEN_DISPLAY'}): AI detected this photo was captured from a display screen, printed photograph, or archived media. Not verified as a real-time live emergency. ${assessment.authenticityReasoning || ''}`.trim();
+    adminNoteMsg = 'Photo may be taken from a screen or printed picture. Please verify with the reporter first.';
   } else if (!aiRecognized) {
-    adminNoteMsg = isLowConfidence
-      ? `⚠️ AI had low confidence in recognizing this incident (type: ${assessment.incidentType}, confidence: low). Admin review required.`
-      : `⚠️ AI could not recognize this incident (confidence: ${aiConfidence}). Admin review required.`;
+    adminNoteMsg = 'Photo is unclear. Please check with the reporter.';
   }
 
   const incident = await prisma.incident.update({
