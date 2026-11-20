@@ -31,6 +31,72 @@ export const incidentQueue = redis
     })
   : null;
 
+/**
+ * Maps an AI vision assessment into a clear, standardized plain-language adminNote
+ * for non-recognized or recaptured photos (used by both live ingest and re-analysis).
+ */
+export function buildAdminNoteFromAssessment(
+  assessment: any,
+  isRecapture: boolean,
+  aiRecognized: boolean,
+  isLowConfidence: boolean
+): string | undefined {
+  const sceneCategory = String(assessment?.sceneCategory || '').toUpperCase();
+  const recaptureType = String(assessment?.recaptureType || '').toUpperCase();
+  const reasonText = `${assessment?.reasoning || ''} ${assessment?.authenticityReasoning || ''}`.toLowerCase();
+
+  if (
+    sceneCategory === 'PRINT_RECAPTURE' ||
+    (isRecapture && (recaptureType === 'PRINTED_PHOTO' || reasonText.includes('print') || reasonText.includes('paper')))
+  ) {
+    return 'Print recapture: Photo looks taken from a printed picture. Please check with the reporter.';
+  }
+  if (sceneCategory === 'SCREEN_RECAPTURE' || isRecapture) {
+    return 'Screen recapture: Photo looks taken from a screen. Please check with the reporter.';
+  }
+  if (aiRecognized) {
+    return undefined;
+  }
+
+  if (sceneCategory === 'NON_INCIDENT') {
+    return 'Non-incident related: Photo does not show an emergency. Please check with the reporter.';
+  }
+  if (sceneCategory === 'BLURRY_OR_DARK') {
+    return 'Blurry photo: Image is too blurry or dark to see clearly. Please check with the reporter.';
+  }
+  if (sceneCategory === 'CANNOT_IDENTIFY') {
+    // Double-check if reasoning clearly describes scenery or a casual person despite CANNOT_IDENTIFY
+    const clearlyNonIncident =
+      /\b(non-incident|non-emergency|not an emergency|no emergency|no disaster|no hazard|no visible (injury|danger|emergency|damage)|benign|harmless|unrelated|meme|selfie|scenery|landscape|nature|sky|trees|building|street|outdoor|indoor|room|ordinary|everyday|casual|normal|person|people|portrait|smiling|standing|food|pet)\b/.test(
+        reasonText
+      );
+    if (clearlyNonIncident) {
+      return 'Non-incident related: Photo does not show an emergency. Please check with the reporter.';
+    }
+    return 'Cannot identify: Could not tell what is in the photo. Please check with the reporter.';
+  }
+
+  // Fallback heuristics when sceneCategory is missing
+  const hasBlurHint =
+    /\b(blur|blurry|out of focus|too dark|low light|poor quality)\b/.test(reasonText) &&
+    !/\b(no blur|not blurry)\b/.test(reasonText);
+  const hasNonIncidentHint =
+    /\b(non-incident|non-emergency|not an emergency|no emergency|no disaster|no hazard|no visible (injury|danger|emergency|damage)|benign|harmless|unrelated|meme|selfie|scenery|landscape|nature|sky|trees|building|street|outdoor|indoor|room|ordinary|everyday|casual|normal|person|people|portrait|smiling|standing|food|pet)\b/.test(
+      reasonText
+    ) ||
+    (String(assessment?.severity || '').toUpperCase() === 'LOW' &&
+      Number(assessment?.urgencyScore) <= 15 &&
+      !isLowConfidence);
+
+  if (hasBlurHint) {
+    return 'Blurry photo: Image is too blurry or dark to see clearly. Please check with the reporter.';
+  }
+  if (hasNonIncidentHint) {
+    return 'Non-incident related: Photo does not show an emergency. Please check with the reporter.';
+  }
+  return 'Cannot identify: Could not tell what is in the photo. Please check with the reporter.';
+}
+
 // ─── Direct Processor (Standalone Fallback) ──────────────────────────────────
 
 /**
@@ -95,34 +161,7 @@ export async function processIncidentDirectly(
   const finalStatus = aiRecognized ? 'PENDING' : 'REVIEWING';
 
   // ── 2. Update the incident record with AI results ─────────────────────────
-  let adminNoteMsg: string | undefined = undefined;
-  const recaptureType = String(assessment.recaptureType || '').toUpperCase();
-  const reasonText = `${assessment.reasoning || ''} ${assessment.authenticityReasoning || ''}`.toLowerCase();
-
-  if (isRecapture) {
-    if (recaptureType === 'PRINTED_PHOTO' || reasonText.includes('print') || reasonText.includes('paper')) {
-      adminNoteMsg = 'Print recapture: Photo looks taken from a printed picture. Please check with the reporter.';
-    } else {
-      adminNoteMsg = 'Screen recapture: Photo looks taken from a screen. Please check with the reporter.';
-    }
-  } else if (!aiRecognized) {
-    if (reasonText.includes('blur') || reasonText.includes('dark') || reasonText.includes('low light') || reasonText.includes('out of focus') || reasonText.includes('poor quality')) {
-      adminNoteMsg = 'Blurry photo: Image is too blurry or dark to see clearly. Please check with the reporter.';
-    } else if (
-      reasonText.includes('non-emergency') ||
-      reasonText.includes('not an emergency') ||
-      reasonText.includes('no emergency') ||
-      reasonText.includes('benign') ||
-      reasonText.includes('harmless') ||
-      reasonText.includes('meme') ||
-      reasonText.includes('selfie') ||
-      reasonText.includes('unrelated')
-    ) {
-      adminNoteMsg = 'Non-incident related: Photo does not show an emergency. Please check with the reporter.';
-    } else {
-      adminNoteMsg = 'Cannot identify: Could not tell what is in the photo. Please check with the reporter.';
-    }
-  }
+  const adminNoteMsg = buildAdminNoteFromAssessment(assessment, isRecapture, aiRecognized, isLowConfidence);
 
   const incident = await prisma.incident.update({
     where: { id: incidentId },

@@ -7,7 +7,7 @@ import { syncDepartmentStatuses } from './departmentController';
 import { messaging } from '../config/firebase';
 import { AuthRequest } from '../middleware/auth';
 import { withRLS } from '../utils/rlsQuery';
-import { incidentQueue, processIncidentDirectly } from '../queues/incidentQueue';
+import { incidentQueue, processIncidentDirectly, buildAdminNoteFromAssessment } from '../queues/incidentQueue';
 import { v2 as cloudinary } from 'cloudinary';
 
 cloudinary.config({
@@ -851,20 +851,24 @@ export const lockIncident = async (req: AuthRequest, res: Response) => {
       },
     });
 
-    const latest = await prisma.incident.findUnique({
-      where: { id },
-      select: { status: true },
-    });
-    const currentStatus = latest?.status || 'REVIEWING';
-
-    if (statusTransition.count > 0) {
-      await prisma.incidentActivity.create({
+    let currentStatus = 'REVIEWING';
+    if (statusTransition.count === 0) {
+      const latest = await prisma.incident.findUnique({
+        where: { id },
+        select: { status: true },
+      });
+      currentStatus = latest?.status || 'REVIEWING';
+    } else {
+      // Log status transition asynchronously so the HTTP response returns immediately
+      prisma.incidentActivity.create({
         data: {
           incidentId: id,
           title: `Status changed to REVIEWING`,
           description: `Opened for review by ${adminName}`,
           type: 'STATUS_CHANGE',
         },
+      }).catch((actErr: any) => {
+        console.warn(`⚠️ Failed to log lock review activity for ${id}:`, actErr.message);
       });
     }
 
@@ -1017,4 +1021,77 @@ export const forceUnlockIncident = async (req: AuthRequest, res: Response) => {
     res.status(500).json({ error: 'Failed to force takeover incident' });
   }
 };
+
+/**
+ * POST /api/incidents/reanalyze-unrecognized — Admin-only batch re-classification
+ * Re-runs Gemini vision analysis with structured sceneCategory on existing
+ * unrecognized / pending-review / "Cannot identify" reports so scenery and
+ * casual person photos are accurately relabeled as Non-Incident Related.
+ */
+export const reanalyzeUnrecognizedIncidents = async (_req: AuthRequest, res: Response) => {
+  try {
+    const candidates = await prisma.incident.findMany({
+      where: {
+        OR: [
+          { aiDetectedType: null },
+          { aiDetectedType: { contains: 'unrecognized', mode: 'insensitive' } },
+          { aiDetectedType: { contains: 'pending review', mode: 'insensitive' } },
+          { aiDetectedType: { contains: 'unknown', mode: 'insensitive' } },
+          { adminNotes: { startsWith: 'Cannot identify', mode: 'insensitive' } },
+        ],
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 50,
+      select: {
+        id: true,
+        photoUrl: true,
+        aiDetectedType: true,
+        adminNotes: true,
+      },
+    });
+
+    const results: Array<{ id: string; previousNote: string | null; updatedNote: string | null; sceneCategory: string }> = [];
+    let updatedCount = 0;
+
+    for (const inc of candidates) {
+      if (!inc.photoUrl) continue;
+      try {
+        const assessment = await runAIAnalysis(inc.photoUrl);
+        const rawConfidence = String(assessment.confidence || '').toLowerCase();
+        const isLowConfidence = rawConfidence === 'low';
+        const isRecapture = Boolean(assessment.recaptureDetected || assessment.isLiveScene === false);
+        const baseRecognized = assessment.recognized ?? isRecognizedIncident(assessment.incidentType);
+        const aiRecognized = baseRecognized && !isLowConfidence && !isRecapture;
+
+        const nextNote = buildAdminNoteFromAssessment(assessment, isRecapture, aiRecognized, isLowConfidence);
+        if (nextNote && nextNote !== inc.adminNotes) {
+          await prisma.incident.update({
+            where: { id: inc.id },
+            data: { adminNotes: nextNote },
+          });
+          updatedCount++;
+        }
+        results.push({
+          id: inc.id,
+          previousNote: inc.adminNotes,
+          updatedNote: nextNote || inc.adminNotes,
+          sceneCategory: String(assessment.sceneCategory || 'UNKNOWN'),
+        });
+      } catch (itemErr: any) {
+        console.warn(`⚠️ Re-analysis skipped for incident ${inc.id}:`, itemErr.message);
+      }
+    }
+
+    return res.json({
+      success: true,
+      scannedCount: candidates.length,
+      updatedCount,
+      results,
+    });
+  } catch (error: any) {
+    console.error('❌ reanalyzeUnrecognizedIncidents error:', error.message);
+    return res.status(500).json({ error: 'Failed to re-analyze unrecognized incidents' });
+  }
+};
+
 

@@ -119,6 +119,7 @@ Return ONLY a JSON object with this exact structure:
   "isLiveScene": <true|false>,
   "recaptureDetected": <true|false>,
   "recaptureType": "<NONE|SCREEN_DISPLAY|PRINTED_PHOTO|DIGITAL_SCREENSHOT|ARCHIVED_MEDIA>",
+  "sceneCategory": "<VALID_EMERGENCY|NON_INCIDENT|BLURRY_OR_DARK|SCREEN_RECAPTURE|PRINT_RECAPTURE|CANNOT_IDENTIFY>",
   "authenticityReasoning": "<concise explanation of whether this is a direct real-time capture or a recapture>",
   "suggestAction": "<PROCESS|REJECT>",
   "reasoning": "<brief explanation of what is detected in the image>"
@@ -149,9 +150,13 @@ Severity & Urgency Scoring Rules:
 - MEDIUM (40-64): Downed utility poles, fallen trees blocking roads, minor structural damage.
 - LOW (1-39): Harmless situations, memes, random objects, benign landscapes, selfies.
 
-Strict Validation Rules:
-- If the image clearly depicts an actual disaster/emergency happening live → recognized: true, isLiveScene: true, suggestAction: "PROCESS"
-- If the image is a meme, selfie, random object, logo, food, pet, text screenshot, or harmless scenery → recognized: false, incidentType: "Unrecognized", recommendedDept: "UNKNOWN", severity: "LOW", urgencyScore: 10, suggestAction: "REJECT"
+Strict Validation & Scene Category Rules:
+- VALID_EMERGENCY: Image clearly depicts an actual disaster/emergency happening live → recognized: true, isLiveScene: true, sceneCategory: "VALID_EMERGENCY", suggestAction: "PROCESS"
+- NON_INCIDENT: Image is clear enough to identify what is shown, and it is NOT an emergency — including ordinary outdoor or indoor scenery/landscapes (sky, trees, roads, buildings, rooms), casual photos of a person or people (portraits, selfies, someone standing or smiling with no visible injury, bleeding, collapse, or distress), memes, random objects, logos, food, pets, or everyday scenes → recognized: false, incidentType: "Unrecognized", recommendedDept: "UNKNOWN", severity: "LOW", urgencyScore: 10, sceneCategory: "NON_INCIDENT", suggestAction: "REJECT"
+- BLURRY_OR_DARK: Image is too blurry, shaky, out of focus, dark, or obstructed to tell what is in the photo → recognized: false, incidentType: "Unrecognized", recommendedDept: "UNKNOWN", severity: "LOW", urgencyScore: 15, sceneCategory: "BLURRY_OR_DARK", suggestAction: "REJECT"
+- SCREEN_RECAPTURE: Photo of a phone/monitor/TV screen or digital screenshot → recognized: false, isLiveScene: false, recaptureDetected: true, sceneCategory: "SCREEN_RECAPTURE", suggestAction: "REJECT"
+- PRINT_RECAPTURE: Photo of a physical printed picture, paper, or newspaper → recognized: false, isLiveScene: false, recaptureDetected: true, sceneCategory: "PRINT_RECAPTURE", suggestAction: "REJECT"
+- CANNOT_IDENTIFY: Only use when the photo is genuinely ambiguous and cannot be classified as a valid emergency, ordinary scenery, a casual person photo, blurry/dark, or a recapture → recognized: false, incidentType: "Unrecognized", recommendedDept: "UNKNOWN", severity: "LOW", urgencyScore: 20, sceneCategory: "CANNOT_IDENTIFY", suggestAction: "REJECT"
 - When in doubt, default to recognized: false and suggestAction: "REJECT" to prevent false alarms.`;
 
     const candidateModels = [
@@ -226,6 +231,16 @@ Strict Validation Rules:
       // prevent auto-dispatch by setting recognized to false
       parsed.recognized = false;
       parsed.suggestAction = "REJECT";
+      if (!parsed.sceneCategory || parsed.sceneCategory === 'VALID_EMERGENCY') {
+        parsed.sceneCategory =
+          String(parsed.recaptureType || '').toUpperCase() === 'PRINTED_PHOTO'
+            ? 'PRINT_RECAPTURE'
+            : 'SCREEN_RECAPTURE';
+      }
+    }
+
+    if (!parsed.sceneCategory) {
+      parsed.sceneCategory = parsed.recognized ? 'VALID_EMERGENCY' : 'CANNOT_IDENTIFY';
     }
 
     // Ensure calibrated severity and urgency score
@@ -250,6 +265,7 @@ Strict Validation Rules:
       isLiveScene: true,
       recaptureDetected: false,
       recaptureType: "NONE",
+      sceneCategory: "CANNOT_IDENTIFY",
       authenticityReasoning: "Fallback assessment due to service error",
     };
   }

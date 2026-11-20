@@ -17,6 +17,7 @@ import {
   heartbeatIncident,
   unlockIncident,
   forceUnlockIncident,
+  reanalyzeUnrecognizedIncidents,
 } from '../controllers/incidentController';
 
 
@@ -55,6 +56,9 @@ router.get('/my/:userId', requireAuth, getMyIncidents);
 
 // Test push notification (debugging) — admin only
 router.post('/test-push', requireAdmin, testPushNotification);
+
+// Re-run AI classification on existing unrecognized / "Cannot identify" reports — admin only
+router.post('/reanalyze-unrecognized', requireAdmin, reanalyzeUnrecognizedIncidents);
 
 // List ALL incidents — admin only
 router.get('/', requireAdmin, getIncidents);
