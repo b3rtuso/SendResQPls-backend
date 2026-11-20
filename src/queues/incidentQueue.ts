@@ -47,22 +47,22 @@ export function buildAdminNoteFromAssessment(
 
   if (
     sceneCategory === 'PRINT_RECAPTURE' ||
-    (isRecapture && (recaptureType === 'PRINTED_PHOTO' || reasonText.includes('print') || reasonText.includes('paper')))
+    recaptureType === 'PRINTED_PHOTO' ||
+    (isRecapture && (reasonText.includes('print') || reasonText.includes('paper')))
   ) {
     return 'Print recapture: Photo looks taken from a printed picture. Please check with the reporter.';
+  }
+  if (sceneCategory === 'BLURRY_OR_DARK') {
+    return 'Blurry photo: Image is too blurry or dark to see clearly. Please check with the reporter.';
+  }
+  if (sceneCategory === 'NON_INCIDENT') {
+    return 'Non-incident related: Photo does not show an emergency. Please check with the reporter.';
   }
   if (sceneCategory === 'SCREEN_RECAPTURE' || isRecapture) {
     return 'Screen recapture: Photo looks taken from a screen. Please check with the reporter.';
   }
   if (aiRecognized) {
     return undefined;
-  }
-
-  if (sceneCategory === 'NON_INCIDENT') {
-    return 'Non-incident related: Photo does not show an emergency. Please check with the reporter.';
-  }
-  if (sceneCategory === 'BLURRY_OR_DARK') {
-    return 'Blurry photo: Image is too blurry or dark to see clearly. Please check with the reporter.';
   }
   if (sceneCategory === 'CANNOT_IDENTIFY') {
     // Double-check if reasoning clearly describes scenery or a casual person despite CANNOT_IDENTIFY

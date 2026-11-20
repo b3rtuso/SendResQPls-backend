@@ -319,7 +319,6 @@ export const reportIncident = async (req: AuthRequest, res: Response) => {
         photoUrl: incident.photoUrl,
         description: incident.description,
         aiDetectedType: 'Emergency (Analyzing...)',
-        aiRecommendedDept: 'RESCUE',
         severity: 'MEDIUM',
         urgencyScore: 50,
         status: 'PENDING',
@@ -336,7 +335,6 @@ export const reportIncident = async (req: AuthRequest, res: Response) => {
         photoUrl: imageUrl,
         description: incident.description,
         aiDetectedType: 'Emergency (Analyzing...)',
-        aiRecommendedDept: 'RESCUE',
         severity: 'MEDIUM',
         urgencyScore: 50,
         createdAt: incident.createdAt,
@@ -1023,70 +1021,145 @@ export const forceUnlockIncident = async (req: AuthRequest, res: Response) => {
 };
 
 /**
- * POST /api/incidents/reanalyze-unrecognized — Admin-only batch re-classification
  * Re-runs Gemini vision analysis with structured sceneCategory on existing
  * unrecognized / pending-review / "Cannot identify" reports so scenery and
- * casual person photos are accurately relabeled as Non-Incident Related.
+ * casual person photos are accurately relabeled as Non-Incident Related and
+ * any fallback "Emergency (Pending Review)" type or "RESCUE" recommendation is cleaned up.
+ */
+export async function runUnrecognizedIncidentsBackfill() {
+  const candidates = await prisma.incident.findMany({
+    where: {
+      OR: [
+        { aiDetectedType: null },
+        { aiDetectedType: { contains: 'unrecognized', mode: 'insensitive' } },
+        { aiDetectedType: { contains: 'pending review', mode: 'insensitive' } },
+        { aiDetectedType: { contains: 'unknown', mode: 'insensitive' } },
+        { aiDetectedType: { contains: 'processing', mode: 'insensitive' } },
+        { aiDetectedType: { contains: 'analyzing', mode: 'insensitive' } },
+        { adminNotes: { startsWith: 'Cannot identify', mode: 'insensitive' } },
+        { adminNotes: { startsWith: 'Photo is unclear', mode: 'insensitive' } },
+      ],
+    },
+    orderBy: { createdAt: 'desc' },
+    take: 50,
+    select: {
+      id: true,
+      photoUrl: true,
+      aiDetectedType: true,
+      aiRecommendedDept: true,
+      assignedDepartment: true,
+      status: true,
+      severity: true,
+      urgencyScore: true,
+      adminNotes: true,
+    },
+  });
+
+  const results: Array<{
+    id: string;
+    previousType: string | null;
+    updatedType: string | null;
+    previousNote: string | null;
+    updatedNote: string | null;
+    sceneCategory: string;
+  }> = [];
+  let updatedCount = 0;
+
+  for (const inc of candidates) {
+    if (!inc.photoUrl) continue;
+    try {
+      const assessment = await runAIAnalysis(inc.photoUrl);
+      if (assessment.authenticityReasoning === 'Fallback assessment due to service error') {
+        console.warn(`⚠️ Skipping backfill update for ${inc.id} because AI service returned error fallback.`);
+        continue;
+      }
+      const rawConfidence = String(assessment.confidence || '').toLowerCase();
+      const isLowConfidence = rawConfidence === 'low';
+      const isRecapture = Boolean(assessment.recaptureDetected || assessment.isLiveScene === false);
+      const baseRecognized = assessment.recognized ?? isRecognizedIncident(assessment.incidentType);
+      const aiRecognized = baseRecognized && !isLowConfidence && !isRecapture;
+
+      const nextNote = buildAdminNoteFromAssessment(assessment, isRecapture, aiRecognized, isLowConfidence) ?? inc.adminNotes;
+      const nextType = aiRecognized
+        ? (assessment.incidentType || inc.aiDetectedType || 'Emergency')
+        : 'Unrecognized';
+      const nextRecommendedDept = aiRecognized
+        ? (inc.aiRecommendedDept || (assessment.recommendedDept && assessment.recommendedDept !== 'UNKNOWN' ? assessment.recommendedDept : null))
+        : null;
+      const nextSeverity = assessment.severity || (aiRecognized ? 'MEDIUM' : 'LOW');
+      const nextUrgencyScore =
+        typeof assessment.urgencyScore === 'number'
+          ? assessment.urgencyScore
+          : (aiRecognized ? 50 : 10);
+
+      const shouldClearFallbackAssigned =
+        !aiRecognized &&
+        inc.assignedDepartment === 'RESCUE' &&
+        inc.status !== 'DISPATCHED' &&
+        inc.status !== 'RESOLVED';
+
+      const hasChanges =
+        nextNote !== inc.adminNotes ||
+        nextType !== inc.aiDetectedType ||
+        nextRecommendedDept !== inc.aiRecommendedDept ||
+        nextSeverity !== inc.severity ||
+        nextUrgencyScore !== inc.urgencyScore ||
+        shouldClearFallbackAssigned;
+
+      if (hasChanges) {
+        await prisma.incident.update({
+          where: { id: inc.id },
+          data: {
+            aiDetectedType: nextType,
+            aiRecommendedDept: nextRecommendedDept,
+            ...(shouldClearFallbackAssigned ? { assignedDepartment: null } : {}),
+            severity: nextSeverity,
+            urgencyScore: nextUrgencyScore,
+            adminNotes: nextNote,
+          },
+        });
+        updatedCount++;
+        try {
+          broadcastSseEvent('status_updated', {
+            id: inc.id,
+            status: inc.status,
+            aiDetectedType: nextType,
+            adminNotes: nextNote,
+          });
+        } catch { /* ignore */ }
+      }
+
+      results.push({
+        id: inc.id,
+        previousType: inc.aiDetectedType,
+        updatedType: nextType,
+        previousNote: inc.adminNotes,
+        updatedNote: nextNote,
+        sceneCategory: String(assessment.sceneCategory || 'UNKNOWN'),
+      });
+
+      // Space requests slightly to stay well under Gemini RPM limits
+      await new Promise(r => setTimeout(r, 1200));
+    } catch (itemErr: any) {
+      console.warn(`⚠️ Re-analysis skipped for incident ${inc.id}:`, itemErr.message);
+    }
+  }
+
+  if (updatedCount > 0) {
+    console.log(`✅ Backfill re-analyzed ${candidates.length} report(s), updated ${updatedCount} report(s).`);
+  }
+  return { scannedCount: candidates.length, updatedCount, results };
+}
+
+/**
+ * POST /api/incidents/reanalyze-unrecognized — Admin-only batch re-classification
  */
 export const reanalyzeUnrecognizedIncidents = async (_req: AuthRequest, res: Response) => {
   try {
-    const candidates = await prisma.incident.findMany({
-      where: {
-        OR: [
-          { aiDetectedType: null },
-          { aiDetectedType: { contains: 'unrecognized', mode: 'insensitive' } },
-          { aiDetectedType: { contains: 'pending review', mode: 'insensitive' } },
-          { aiDetectedType: { contains: 'unknown', mode: 'insensitive' } },
-          { adminNotes: { startsWith: 'Cannot identify', mode: 'insensitive' } },
-        ],
-      },
-      orderBy: { createdAt: 'desc' },
-      take: 50,
-      select: {
-        id: true,
-        photoUrl: true,
-        aiDetectedType: true,
-        adminNotes: true,
-      },
-    });
-
-    const results: Array<{ id: string; previousNote: string | null; updatedNote: string | null; sceneCategory: string }> = [];
-    let updatedCount = 0;
-
-    for (const inc of candidates) {
-      if (!inc.photoUrl) continue;
-      try {
-        const assessment = await runAIAnalysis(inc.photoUrl);
-        const rawConfidence = String(assessment.confidence || '').toLowerCase();
-        const isLowConfidence = rawConfidence === 'low';
-        const isRecapture = Boolean(assessment.recaptureDetected || assessment.isLiveScene === false);
-        const baseRecognized = assessment.recognized ?? isRecognizedIncident(assessment.incidentType);
-        const aiRecognized = baseRecognized && !isLowConfidence && !isRecapture;
-
-        const nextNote = buildAdminNoteFromAssessment(assessment, isRecapture, aiRecognized, isLowConfidence);
-        if (nextNote && nextNote !== inc.adminNotes) {
-          await prisma.incident.update({
-            where: { id: inc.id },
-            data: { adminNotes: nextNote },
-          });
-          updatedCount++;
-        }
-        results.push({
-          id: inc.id,
-          previousNote: inc.adminNotes,
-          updatedNote: nextNote || inc.adminNotes,
-          sceneCategory: String(assessment.sceneCategory || 'UNKNOWN'),
-        });
-      } catch (itemErr: any) {
-        console.warn(`⚠️ Re-analysis skipped for incident ${inc.id}:`, itemErr.message);
-      }
-    }
-
+    const summary = await runUnrecognizedIncidentsBackfill();
     return res.json({
       success: true,
-      scannedCount: candidates.length,
-      updatedCount,
-      results,
+      ...summary,
     });
   } catch (error: any) {
     console.error('❌ reanalyzeUnrecognizedIncidents error:', error.message);

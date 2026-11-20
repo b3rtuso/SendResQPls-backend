@@ -1,7 +1,6 @@
+import 'dotenv/config';
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import axios from "axios";
-
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
 
 // Known incident types the AI should recognize
 const KNOWN_INCIDENT_TYPES = [
@@ -78,7 +77,7 @@ export const calculateUrgency = (
 
 export const runAIAnalysis = async (imageUrl: string) => {
   try {
-    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+    const genAI = new GoogleGenerativeAI((process.env.GEMINI_API_KEY || "").trim());
 
     let imageData: string;
     let mimeType = "image/jpeg";
@@ -162,18 +161,17 @@ Strict Validation & Scene Category Rules:
     const candidateModels = [
       process.env.GEMINI_MODEL,
       "gemini-3.6-flash",
-      "gemini-2.5-flash",
       "gemini-flash-latest",
-      "gemini-1.5-flash"
     ].filter(Boolean) as string[];
 
-    let result: any = null;
+    let parsed: any = null;
     let lastError: any = null;
 
     for (const modelName of candidateModels) {
       try {
         const model = genAI.getGenerativeModel({ model: modelName });
         let attempts = 0;
+        let result: any = null;
         while (attempts < 2) {
           try {
             result = await model.generateContent([
@@ -187,32 +185,29 @@ Strict Validation & Scene Category Rules:
             if (errMsg.includes('not found') || errMsg.includes('no longer available')) {
               throw genErr;
             }
-            if (attempts >= 2 || (!errMsg.includes('429') && !errMsg.includes('quota') && !errMsg.includes('resource_exhausted'))) {
+            if (attempts >= 2 || (!errMsg.includes('429') && !errMsg.includes('503') && !errMsg.includes('high demand') && !errMsg.includes('quota') && !errMsg.includes('resource_exhausted'))) {
               throw genErr;
             }
-            console.warn(`⚠️ Gemini rate limit hit on ${modelName}, backing off 2.5s before retry (attempt ${attempts})...`);
-            await new Promise(r => setTimeout(r, 2500));
+            console.warn(`⚠️ Gemini rate limit hit on ${modelName}, backing off 2s before retry (attempt ${attempts})...`);
+            await new Promise(r => setTimeout(r, 2000));
           }
         }
-        if (result) break;
+        if (result) {
+          const text = result.response.text();
+          const jsonMatch = text.match(/\{[\s\S]*\}/);
+          parsed = jsonMatch ? JSON.parse(jsonMatch[0]) : JSON.parse(text);
+          if (parsed && typeof parsed === 'object') break;
+        }
       } catch (err: any) {
         lastError = err;
-        const msg = (err.message || '').toLowerCase();
-        if (msg.includes('not found') || msg.includes('no longer available')) {
-          console.warn(`⚠️ Gemini model ${modelName} unavailable, trying next candidate...`);
-          continue;
-        }
-        throw err;
+        console.warn(`⚠️ Gemini model ${modelName} failed (${err.message}), trying next candidate...`);
+        continue;
       }
     }
 
-    if (!result) {
+    if (!parsed) {
       throw lastError || new Error("Failed to generate content with any Gemini model.");
     }
-
-    const text = result.response.text();
-    const jsonMatch = text.match(/\{[\s\S]*\}/);
-    const parsed = jsonMatch ? JSON.parse(jsonMatch[0]) : JSON.parse(text);
 
     // Normalize the recognized flag
     if (parsed.recognized === undefined) {

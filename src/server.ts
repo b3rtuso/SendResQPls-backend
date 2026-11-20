@@ -10,6 +10,7 @@ import callLogRoutes from './routes/callLogRoutes';
 import reportRoutes from './routes/reportRoutes';
 import analyticsRoutes from './routes/analyticsRoutes';
 import { incidentWorker } from './queues/incidentQueue'; // Start background AI worker
+import { runUnrecognizedIncidentsBackfill } from './controllers/incidentController';
 
 import { prisma } from './config/db';
 import bcrypt from 'bcrypt';
@@ -142,6 +143,11 @@ app.listen(PORT, async () => {
   console.log(`🚀 System running on port ${PORT}`);
   console.log(`⚙️  Background worker: ${incidentWorker.name} (concurrency: 5)`);
   await seedDefaultAdmin();
+  setTimeout(() => {
+    runUnrecognizedIncidentsBackfill().catch((err: any) => {
+      console.warn('⚠️ Startup unrecognized incidents backfill failed:', err.message);
+    });
+  }, 3000);
 });
 
 // ── Global Error Handler ──────────────────────────────────────────────────────
