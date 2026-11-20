@@ -41,60 +41,74 @@ export function buildAdminNoteFromAssessment(
   aiRecognized: boolean,
   isLowConfidence: boolean
 ): string | undefined {
-  const sceneCategory = String(assessment?.sceneCategory || '').toUpperCase();
-  const recaptureType = String(assessment?.recaptureType || '').toUpperCase();
+  const sceneCategory = String(assessment?.sceneCategory || '').toUpperCase().trim();
+  const recaptureType = String(assessment?.recaptureType || '').toUpperCase().trim();
   const reasonText = `${assessment?.reasoning || ''} ${assessment?.authenticityReasoning || ''}`.toLowerCase();
 
+  // 1. Print recapture
   if (
     sceneCategory === 'PRINT_RECAPTURE' ||
+    sceneCategory === 'PRINTED_PHOTO' ||
     recaptureType === 'PRINTED_PHOTO' ||
     (isRecapture && (reasonText.includes('print') || reasonText.includes('paper')))
   ) {
     return 'Print recapture: Photo looks taken from a printed picture. Please check with the reporter.';
   }
-  if (sceneCategory === 'BLURRY_OR_DARK') {
+
+  // 2. Blurry photo
+  if (
+    sceneCategory === 'BLURRY_OR_DARK' ||
+    sceneCategory === 'BLURRY_PHOTO' ||
+    sceneCategory === 'BLURRY'
+  ) {
     return 'Blurry photo: Image is too blurry or dark to see clearly. Please check with the reporter.';
   }
-  if (sceneCategory === 'NON_INCIDENT') {
+
+  // 3. Non-incident related
+  if (
+    sceneCategory === 'NON_INCIDENT' ||
+    sceneCategory === 'NON_INCIDENT_RELATED'
+  ) {
     return 'Non-incident related: Photo does not show an emergency. Please check with the reporter.';
   }
-  if (sceneCategory === 'SCREEN_RECAPTURE' || isRecapture) {
+
+  // 4. Screen recapture
+  if (
+    sceneCategory === 'SCREEN_RECAPTURE' ||
+    sceneCategory === 'SCREEN_DISPLAY' ||
+    sceneCategory === 'DIGITAL_SCREENSHOT' ||
+    recaptureType === 'SCREEN_DISPLAY' ||
+    recaptureType === 'DIGITAL_SCREENSHOT' ||
+    isRecapture
+  ) {
     return 'Screen recapture: Photo looks taken from a screen. Please check with the reporter.';
   }
-  if (aiRecognized) {
+
+  // 5. Verified Live Scene (valid emergency)
+  if (aiRecognized || sceneCategory === 'VALID_EMERGENCY' || sceneCategory === 'LIVE_SCENE') {
     return undefined;
   }
-  if (sceneCategory === 'CANNOT_IDENTIFY') {
-    // Double-check if reasoning clearly describes scenery or a casual person despite CANNOT_IDENTIFY
-    const clearlyNonIncident =
-      /\b(non-incident|non-emergency|not an emergency|no emergency|no disaster|no hazard|no visible (injury|danger|emergency|damage)|benign|harmless|unrelated|meme|selfie|scenery|landscape|nature|sky|trees|building|street|outdoor|indoor|room|ordinary|everyday|casual|normal|person|people|portrait|smiling|standing|food|pet)\b/.test(
-        reasonText
-      );
-    if (clearlyNonIncident) {
-      return 'Non-incident related: Photo does not show an emergency. Please check with the reporter.';
-    }
+
+  // Service fallback check (only if AI service was unreachable / errored)
+  const isServiceFallback =
+    reasonText.includes('ai service issue') ||
+    reasonText.includes('fallback assessment due to service error') ||
+    reasonText.includes('image data was unreachable');
+
+  if (isServiceFallback) {
     return 'Cannot identify: Could not tell what is in the photo. Please check with the reporter.';
   }
 
-  // Fallback heuristics when sceneCategory is missing
+  // Keyword fallback between Blurry photo vs Non-incident related
   const hasBlurHint =
-    /\b(blur|blurry|out of focus|too dark|low light|poor quality)\b/.test(reasonText) &&
+    /\b(blur|blurry|out of focus|defocused|too dark|pitch dark|low light|poor quality)\b/.test(reasonText) &&
     !/\b(no blur|not blurry)\b/.test(reasonText);
-  const hasNonIncidentHint =
-    /\b(non-incident|non-emergency|not an emergency|no emergency|no disaster|no hazard|no visible (injury|danger|emergency|damage)|benign|harmless|unrelated|meme|selfie|scenery|landscape|nature|sky|trees|building|street|outdoor|indoor|room|ordinary|everyday|casual|normal|person|people|portrait|smiling|standing|food|pet)\b/.test(
-      reasonText
-    ) ||
-    (String(assessment?.severity || '').toUpperCase() === 'LOW' &&
-      Number(assessment?.urgencyScore) <= 15 &&
-      !isLowConfidence);
 
   if (hasBlurHint) {
     return 'Blurry photo: Image is too blurry or dark to see clearly. Please check with the reporter.';
   }
-  if (hasNonIncidentHint) {
-    return 'Non-incident related: Photo does not show an emergency. Please check with the reporter.';
-  }
-  return 'Cannot identify: Could not tell what is in the photo. Please check with the reporter.';
+
+  return 'Non-incident related: Photo does not show an emergency. Please check with the reporter.';
 }
 
 // ─── Direct Processor (Standalone Fallback) ──────────────────────────────────
@@ -115,7 +129,11 @@ export async function processIncidentDirectly(
   const assessment = await runAIAnalysis(imageUrl);
   const rawConfidence: string = (assessment.confidence || '').toLowerCase();
   const isLowConfidence: boolean = rawConfidence === 'low';
-  const isRecapture: boolean = Boolean(assessment.recaptureDetected || assessment.isLiveScene === false);
+  const isRecapture: boolean = Boolean(
+    assessment.recaptureDetected ||
+    assessment.sceneCategory === 'PRINT_RECAPTURE' ||
+    assessment.sceneCategory === 'SCREEN_RECAPTURE'
+  );
   // Treat incident as recognized ONLY if recognized flag is true, confidence is NOT low, AND it is NOT a recapture
   const baseRecognized: boolean = assessment.recognized ?? isRecognizedIncident(assessment.incidentType);
   const aiRecognized: boolean = baseRecognized && !isLowConfidence && !isRecapture;

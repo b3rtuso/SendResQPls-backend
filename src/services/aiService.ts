@@ -102,61 +102,70 @@ export const runAIAnalysis = async (imageUrl: string) => {
       imageData = fileBuffer.toString("base64");
     }
 
-    const prompt = `You are an emergency incident classifier, authenticity evaluator, and urgency rater for MDRRMO Balayan, Batangas Philippines.
-Analyze this image to determine:
-1. Incident classification and urgency.
-2. Authenticity & Real-Time Liveness: Check if this photo captures an active, real-time emergency happening directly in front of the camera, OR if it is a RECAPTURE (a photo taken of another display screen, monitor, TV, phone, tablet, or a physical printed photo/newspaper/document).
+    const prompt = `You are an emergency incident photo classifier, authenticity evaluator, and urgency rater for MDRRMO Balayan, Batangas, Philippines.
 
-Return ONLY a JSON object with this exact structure:
+Analyze the submitted image by following this strict 5-CATEGORY DECISION TREE in priority order (choose exactly ONE sceneCategory from the 5 categories below):
+
+STEP 1 — Check for PRINT_RECAPTURE (Photo of a Physical Print):
+- Does the photo show a physical printed picture, paper printout, magazine, newspaper, document, or framed photo?
+- Look for: visible paper edges/corners, white paper borders/margins, paper creases/folds/sheen, a desk/table/logbook/keyboard background surrounding a printed sheet, halftone ink dots, or hands/fingers holding paper.
+- If YES → set:
+  "sceneCategory": "PRINT_RECAPTURE", "recognized": false, "isLiveScene": false, "recaptureDetected": true, "recaptureType": "PRINTED_PHOTO", "incidentType": "Unrecognized", "recommendedDept": "UNKNOWN", "severity": "LOW", "urgencyScore": 0, "suggestAction": "REJECT"
+
+STEP 2 — Check for SCREEN_RECAPTURE (Photo of a Digital Screen or Screenshot):
+- Is the image a photo taken of another digital display screen (phone, computer monitor, laptop, tablet, television) OR a digital screenshot?
+- Look for: screen bezels/monitor frames, LCD pixel grid/moiré scan lines, glass glare/reflection on a screen, browser tabs/address bars, mobile status bars, app UI overlays, or video player scrubber bars.
+- If YES → set:
+  "sceneCategory": "SCREEN_RECAPTURE", "recognized": false, "isLiveScene": false, "recaptureDetected": true, "recaptureType": "SCREEN_DISPLAY", "incidentType": "Unrecognized", "recommendedDept": "UNKNOWN", "severity": "LOW", "urgencyScore": 0, "suggestAction": "REJECT"
+
+STEP 3 — Check for BLURRY_OR_DARK (Blurry, Out-of-Focus, Dark, or Obstructed Photo):
+- Is the photo too blurry, out of focus, motion-blurred, defocused, pitch-dark, severely overexposed, or physically obstructed (e.g. lens covered) to clearly see any subject or scene?
+- If YES → set:
+  "sceneCategory": "BLURRY_OR_DARK", "recognized": false, "isLiveScene": true, "recaptureDetected": false, "recaptureType": "NONE", "incidentType": "Unrecognized", "recommendedDept": "UNKNOWN", "severity": "LOW", "urgencyScore": 15, "suggestAction": "REJECT"
+
+STEP 4 — Check for NON_INCIDENT (Clear Real-World Photo with NO Emergency):
+- Is the photo reasonably visible, taken directly in the real world (not a print or screen), and shows NO active emergency, hazard, or injury?
+- Examples of NON_INCIDENT:
+  • Outdoor or indoor scenery (trees, sky, calm street, buildings, houses, walls, floors, ceiling, empty room, furniture)
+  • Casual photo of a person or people (selfies, portraits, people standing/sitting/walking/talking/smiling indoors or outdoors with NO visible injury, bleeding, collapse, or distress)
+  • Everyday objects, documents, food, pets, vehicles parked normally, or harmless scenes
+- If YES → set:
+  "sceneCategory": "NON_INCIDENT", "recognized": false, "isLiveScene": true, "recaptureDetected": false, "recaptureType": "NONE", "incidentType": "Unrecognized", "recommendedDept": "UNKNOWN", "severity": "LOW", "urgencyScore": 10, "suggestAction": "REJECT"
+
+STEP 5 — Check for VALID_EMERGENCY (Verified Live Scene Photo of an Active Emergency):
+- Is the photo a direct, real-time camera capture of an active emergency or life-safety hazard happening live in front of the camera?
+- Valid Incident Types & Department Mapping:
+  • "Fire" (active flames, structure/vehicle/grass fire, heavy smoke plume) → "BFP"
+  • "Crime" (active violence, assault, armed threat, crime scene) → "PNP"
+  • "Medical Emergency" (unconscious/collapsed person, cardiac/respiratory distress, acute medical crisis) → "MEDICAL"
+  • "Trauma" (severe bleeding, open wounds, fracture, physical trauma victim) → "MEDICAL"
+  • "Vehicular Accident" (crashed/collided/overturned vehicles, road collision victim) → "RESCUE"
+  • "Flood" (flooded road/street/house, rising floodwater, stranded residents/vehicles) → "RESCUE"
+  • "Typhoon" (severe storm damage, fallen trees/poles blocking road, blown-off roof) → "RESCUE"
+  • "Landslide" (collapsed slope, mudslide, rockfall, road collapse) → "ENGINEERING"
+- Severity & Urgency Score (for VALID_EMERGENCY):
+  • "CRITICAL" (85-100): Raging fire, violent crime, severe crash with trapped/bleeding victims, deep life-threatening flood, structural collapse.
+  • "HIGH" (65-84): Vehicular collision, significant road/residential flooding, landslide blocking road, acute medical/trauma emergency.
+  • "MEDIUM" (40-64): Fallen tree/utility pole, localized minor flooding, minor property damage.
+- If YES → set:
+  "sceneCategory": "VALID_EMERGENCY", "recognized": true, "isLiveScene": true, "recaptureDetected": false, "recaptureType": "NONE", "suggestAction": "PROCESS"
+
+Return ONLY a valid JSON object matching this exact schema:
 {
   "incidentType": "<Fire|Flood|Vehicular Accident|Medical Emergency|Trauma|Crime|Typhoon|Landslide|Unrecognized>",
   "recommendedDept": "<BFP|PNP|MEDICAL|ENGINEERING|RESCUE|UNKNOWN>",
   "confidence": "<high|medium|low>",
   "severity": "<CRITICAL|HIGH|MEDIUM|LOW>",
-  "urgencyScore": <number 1-100>,
+  "urgencyScore": <number 0-100>,
   "recognized": <true|false>,
   "isLiveScene": <true|false>,
   "recaptureDetected": <true|false>,
-  "recaptureType": "<NONE|SCREEN_DISPLAY|PRINTED_PHOTO|DIGITAL_SCREENSHOT|ARCHIVED_MEDIA>",
-  "sceneCategory": "<VALID_EMERGENCY|NON_INCIDENT|BLURRY_OR_DARK|SCREEN_RECAPTURE|PRINT_RECAPTURE|CANNOT_IDENTIFY>",
-  "authenticityReasoning": "<concise explanation of whether this is a direct real-time capture or a recapture>",
+  "recaptureType": "<NONE|SCREEN_DISPLAY|PRINTED_PHOTO>",
+  "sceneCategory": "<PRINT_RECAPTURE|SCREEN_RECAPTURE|BLURRY_OR_DARK|NON_INCIDENT|VALID_EMERGENCY>",
+  "authenticityReasoning": "<concise explanation of why the photo belongs to this sceneCategory>",
   "suggestAction": "<PROCESS|REJECT>",
-  "reasoning": "<brief explanation of what is detected in the image>"
-}
-
-Authenticity & Liveness Detection Rules:
-- A photo is a RECAPTURE (recaptureDetected: true, isLiveScene: false) if:
-  1. SCREEN_DISPLAY: The photo shows a computer monitor, television, laptop, or mobile screen displaying an incident. Look for visible monitor borders/bezels, LCD moiré scan lines, pixel grids, glare/reflection on glass screens, browser address bars, YouTube/video scrubber bars, or TV broadcast news graphics.
-  2. PRINTED_PHOTO: The photo shows a physical paper photo, magazine, newspaper clipping, or framed picture. Look for paper sheen, margins, white border lines, halftone printing artifacts, or fingers visibly holding a physical print.
-  3. DIGITAL_SCREENSHOT: The image is a direct device screenshot or downloaded image file rather than a camera shot.
-- If recaptureDetected is true, set recognized: false, suggestAction: "REJECT", and explain clearly in authenticityReasoning (e.g., "Photo is recaptured from a computer/TV screen showing old footage rather than an active real-time incident").
-- If the image shows a genuine direct, real-world live scene happening in the environment, set isLiveScene: true, recaptureDetected: false, recaptureType: "NONE".
-
-Department Mapping:
-- Fire → BFP
-- Crime, Violence, Shooting, Disturbance → PNP
-- Medical Emergency, Cardiac, Unconscious → MEDICAL
-- Trauma, Severe Bleeding, Amputation → MEDICAL
-- Vehicular Accident, Collision → RESCUE
-- Flood, Water Inundation → RESCUE
-- Typhoon, Wind Damage, Fallen Tree → RESCUE
-- Landslide, Mudslide, Road Collapse → ENGINEERING
-- Unrecognized, Benign scenery, Meme, Non-emergency → UNKNOWN
-
-Severity & Urgency Scoring Rules:
-- CRITICAL (85-100): Active raging fires, violent armed crimes, catastrophic structural collapse, drowning, life-threatening disaster.
-- HIGH (65-84): Vehicular crashes with injury, deep flood waters, landslides on roads, acute medical emergencies.
-- MEDIUM (40-64): Downed utility poles, fallen trees blocking roads, minor structural damage.
-- LOW (1-39): Harmless situations, memes, random objects, benign landscapes, selfies.
-
-Strict Validation & Scene Category Rules:
-- VALID_EMERGENCY: Image clearly depicts an actual disaster/emergency happening live → recognized: true, isLiveScene: true, sceneCategory: "VALID_EMERGENCY", suggestAction: "PROCESS"
-- NON_INCIDENT: Image is clear enough to identify what is shown, and it is NOT an emergency — including ordinary outdoor or indoor scenery/landscapes (sky, trees, roads, buildings, rooms), casual photos of a person or people (portraits, selfies, someone standing or smiling with no visible injury, bleeding, collapse, or distress), memes, random objects, logos, food, pets, or everyday scenes → recognized: false, incidentType: "Unrecognized", recommendedDept: "UNKNOWN", severity: "LOW", urgencyScore: 10, sceneCategory: "NON_INCIDENT", suggestAction: "REJECT"
-- BLURRY_OR_DARK: Image is too blurry, shaky, out of focus, dark, or obstructed to tell what is in the photo → recognized: false, incidentType: "Unrecognized", recommendedDept: "UNKNOWN", severity: "LOW", urgencyScore: 15, sceneCategory: "BLURRY_OR_DARK", suggestAction: "REJECT"
-- SCREEN_RECAPTURE: Photo of a phone/monitor/TV screen or digital screenshot → recognized: false, isLiveScene: false, recaptureDetected: true, sceneCategory: "SCREEN_RECAPTURE", suggestAction: "REJECT"
-- PRINT_RECAPTURE: Photo of a physical printed picture, paper, or newspaper → recognized: false, isLiveScene: false, recaptureDetected: true, sceneCategory: "PRINT_RECAPTURE", suggestAction: "REJECT"
-- CANNOT_IDENTIFY: Only use when the photo is genuinely ambiguous and cannot be classified as a valid emergency, ordinary scenery, a casual person photo, blurry/dark, or a recapture → recognized: false, incidentType: "Unrecognized", recommendedDept: "UNKNOWN", severity: "LOW", urgencyScore: 20, sceneCategory: "CANNOT_IDENTIFY", suggestAction: "REJECT"
-- When in doubt, default to recognized: false and suggestAction: "REJECT" to prevent false alarms.`;
+  "reasoning": "<clear description of what is visible in the image>"
+}`;
 
     const candidateModels = [
       process.env.GEMINI_MODEL,
@@ -169,7 +178,13 @@ Strict Validation & Scene Category Rules:
 
     for (const modelName of candidateModels) {
       try {
-        const model = genAI.getGenerativeModel({ model: modelName });
+        const model = genAI.getGenerativeModel({
+          model: modelName,
+          generationConfig: {
+            temperature: 0.1,
+            responseMimeType: "application/json",
+          },
+        });
         let attempts = 0;
         let result: any = null;
         while (attempts < 2) {
@@ -209,6 +224,64 @@ Strict Validation & Scene Category Rules:
       throw lastError || new Error("Failed to generate content with any Gemini model.");
     }
 
+    // Normalize sceneCategory aliases into the 5 canonical categories
+    const rawCategory = String(parsed.sceneCategory || "").toUpperCase().trim();
+    const rawRecaptureType = String(parsed.recaptureType || "").toUpperCase().trim();
+    const combinedReasoning = `${parsed.reasoning || ""} ${parsed.authenticityReasoning || ""}`.toLowerCase();
+
+    if (
+      rawCategory === "PRINT_RECAPTURE" ||
+      rawCategory === "PRINTED_PHOTO" ||
+      rawRecaptureType === "PRINTED_PHOTO"
+    ) {
+      parsed.sceneCategory = "PRINT_RECAPTURE";
+      parsed.recaptureDetected = true;
+      parsed.recaptureType = "PRINTED_PHOTO";
+      parsed.isLiveScene = false;
+      parsed.recognized = false;
+      parsed.suggestAction = "REJECT";
+    } else if (
+      rawCategory === "SCREEN_RECAPTURE" ||
+      rawCategory === "SCREEN_DISPLAY" ||
+      rawCategory === "DIGITAL_SCREENSHOT" ||
+      rawRecaptureType === "SCREEN_DISPLAY" ||
+      rawRecaptureType === "DIGITAL_SCREENSHOT"
+    ) {
+      parsed.sceneCategory = "SCREEN_RECAPTURE";
+      parsed.recaptureDetected = true;
+      parsed.recaptureType = "SCREEN_DISPLAY";
+      parsed.isLiveScene = false;
+      parsed.recognized = false;
+      parsed.suggestAction = "REJECT";
+    } else if (
+      rawCategory === "BLURRY_OR_DARK" ||
+      rawCategory === "BLURRY_PHOTO" ||
+      rawCategory === "BLURRY"
+    ) {
+      parsed.sceneCategory = "BLURRY_OR_DARK";
+      parsed.recaptureDetected = false;
+      parsed.recaptureType = "NONE";
+      parsed.isLiveScene = true;
+      parsed.recognized = false;
+      parsed.suggestAction = "REJECT";
+    } else if (
+      rawCategory === "NON_INCIDENT" ||
+      rawCategory === "NON_INCIDENT_RELATED"
+    ) {
+      parsed.sceneCategory = "NON_INCIDENT";
+      parsed.recaptureDetected = false;
+      parsed.recaptureType = "NONE";
+      parsed.isLiveScene = true;
+      parsed.recognized = false;
+      parsed.suggestAction = "REJECT";
+    } else if (
+      rawCategory === "VALID_EMERGENCY" ||
+      rawCategory === "LIVE_SCENE" ||
+      rawCategory === "LIVE_SCENE_PHOTO"
+    ) {
+      parsed.sceneCategory = "VALID_EMERGENCY";
+    }
+
     // Normalize the recognized flag
     if (parsed.recognized === undefined) {
       parsed.recognized = isRecognizedIncident(parsed.incidentType);
@@ -219,29 +292,52 @@ Strict Validation & Scene Category Rules:
       parsed.isLiveScene = !parsed.recaptureDetected;
     }
     if (parsed.recaptureDetected === undefined) {
-      parsed.recaptureDetected = parsed.isLiveScene === false;
+      parsed.recaptureDetected =
+        parsed.sceneCategory === "PRINT_RECAPTURE" ||
+        parsed.sceneCategory === "SCREEN_RECAPTURE";
     }
     if (parsed.recaptureDetected) {
-      // If a recapture was detected (photo of a screen, monitor, or printout),
-      // prevent auto-dispatch by setting recognized to false
       parsed.recognized = false;
+      parsed.isLiveScene = false;
       parsed.suggestAction = "REJECT";
-      if (!parsed.sceneCategory || parsed.sceneCategory === 'VALID_EMERGENCY') {
+      if (
+        parsed.sceneCategory !== "PRINT_RECAPTURE" &&
+        parsed.sceneCategory !== "SCREEN_RECAPTURE"
+      ) {
         parsed.sceneCategory =
-          String(parsed.recaptureType || '').toUpperCase() === 'PRINTED_PHOTO'
-            ? 'PRINT_RECAPTURE'
-            : 'SCREEN_RECAPTURE';
+          rawRecaptureType === "PRINTED_PHOTO" ||
+          /\b(print|printed|paper)\b/.test(combinedReasoning)
+            ? "PRINT_RECAPTURE"
+            : "SCREEN_RECAPTURE";
       }
     }
 
-    if (!parsed.sceneCategory) {
-      parsed.sceneCategory = parsed.recognized ? 'VALID_EMERGENCY' : 'CANNOT_IDENTIFY';
+    // Guarantee every genuine AI response resolves to one of the 5 canonical categories
+    if (
+      parsed.sceneCategory !== "PRINT_RECAPTURE" &&
+      parsed.sceneCategory !== "SCREEN_RECAPTURE" &&
+      parsed.sceneCategory !== "BLURRY_OR_DARK" &&
+      parsed.sceneCategory !== "NON_INCIDENT" &&
+      parsed.sceneCategory !== "VALID_EMERGENCY"
+    ) {
+      if (parsed.recognized && isRecognizedIncident(parsed.incidentType)) {
+        parsed.sceneCategory = "VALID_EMERGENCY";
+      } else if (
+        /\b(blur|blurry|out of focus|defocused|too dark|pitch dark|low light)\b/.test(combinedReasoning) &&
+        !/\b(no blur|not blurry)\b/.test(combinedReasoning)
+      ) {
+        parsed.sceneCategory = "BLURRY_OR_DARK";
+        parsed.isLiveScene = false;
+      } else {
+        parsed.sceneCategory = "NON_INCIDENT";
+        parsed.isLiveScene = true;
+      }
     }
 
     // Ensure calibrated severity and urgency score
     const fallback = calculateUrgency(parsed.incidentType, parsed.confidence);
     if (!parsed.severity) parsed.severity = fallback.severity;
-    if (!parsed.urgencyScore || typeof parsed.urgencyScore !== 'number') {
+    if (parsed.urgencyScore === undefined || typeof parsed.urgencyScore !== 'number') {
       parsed.urgencyScore = fallback.urgencyScore;
     }
 
