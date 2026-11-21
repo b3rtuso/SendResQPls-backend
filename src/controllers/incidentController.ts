@@ -381,7 +381,7 @@ export const reportIncident = async (req: AuthRequest, res: Response) => {
 export const updateIncidentStatus = async (req: AuthRequest, res: Response) => {
   try {
     const id = req.params.id as string;
-    const { status, adminNotes, assignedDepartment, resolutionForm, severity, urgencyScore, aiDetectedType } = req.body;
+    const { status, adminNotes, assignedDepartment, resolutionForm, severity, urgencyScore, aiDetectedType, triageDecision } = req.body;
 
     const current = await prisma.incident.findUnique({
       where: { id },
@@ -467,6 +467,15 @@ export const updateIncidentStatus = async (req: AuthRequest, res: Response) => {
         data: {
           incidentId: id,
           title: `Status changed to ${status}`,
+          type: 'STATUS_CHANGE',
+        },
+      });
+    } else if (triageDecision === 'KEPT') {
+      const adminUser = await prisma.user.findUnique({ where: { id: adminId }, select: { name: true } });
+      await prisma.incidentActivity.create({
+        data: {
+          incidentId: id,
+          title: `Accepted for manual review by ${adminUser?.name || 'Administrator'}`,
           type: 'STATUS_CHANGE',
         },
       });
