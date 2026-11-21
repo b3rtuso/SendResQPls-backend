@@ -211,6 +211,8 @@ export async function processIncidentDirectly(
     } else {
       broadcastSseEvent('unrecognized_incident', {
         id: incident.id,
+        photoUrl: incident.photoUrl,
+        barangay: incident.barangay,
         aiDetectedType: isLowConfidence ? `${assessment.incidentType} (Low Confidence)` : assessment.incidentType,
         aiConfidence,
         adminNotes: adminNoteMsg,
