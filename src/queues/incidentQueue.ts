@@ -193,45 +193,70 @@ export async function processIncidentDirectly(
     },
   });
 
-  // Log AI analysis completed activity
-  try {
-    const detectedLabel = (assessment.incidentType || 'Emergency').toUpperCase();
-    await prisma.incidentActivity.create({
-      data: {
-        incidentId,
-        title: `AI analysis completed — ${detectedLabel} detected`,
-        type: 'AI_ANALYSIS',
-      },
-    });
-
-    if (isRecapture) {
-      await prisma.incidentActivity.create({
-        data: {
-          incidentId,
-          title: `⚠️ Liveness alert: Suspected recapture (${assessment.recaptureType || 'Screen/Photo'})`,
-          type: 'AI_ANALYSIS',
-        },
-      });
-    }
-
-    if (aiRecognized && recommended) {
-      await prisma.incidentActivity.create({
-        data: {
-          incidentId,
-          title: `Auto-assigned to ${recommended} based on AI recommendation`,
-          type: 'ASSIGNED',
-        },
-      });
-    }
-  } catch (actErr: any) {
-    console.warn(`⚠️ Failed to log AI activity for incident ${incidentId}:`, actErr.message);
-  }
-
   console.log(`✅ Incident ${incidentId} updated | Type: ${assessment.incidentType} | Recognized: ${aiRecognized} | Status: ${finalStatus}`);
 
-  // ── 3. Notify admin devices via FCM ───────────────────────────────────────
-  if (messaging) {
-    try {
+  // ── 2b. Broadcast SSE IMMEDIATELY to admin web dashboard (0ms wait on FCM/activity logs) ──
+  try {
+    const { broadcastSseEvent } = await import('../controllers/incidentController');
+    if (aiRecognized) {
+      broadcastSseEvent('new_incident', {
+        id: incident.id,
+        aiDetectedType: assessment.incidentType,
+        aiRecommendedDept: recommended,
+        severity: assessment.severity || 'MEDIUM',
+        urgencyScore: assessment.urgencyScore || 50,
+        status: 'PENDING',
+        createdAt: incident.createdAt,
+      });
+    } else {
+      broadcastSseEvent('unrecognized_incident', {
+        id: incident.id,
+        aiDetectedType: isLowConfidence ? `${assessment.incidentType} (Low Confidence)` : assessment.incidentType,
+        aiConfidence,
+        adminNotes: adminNoteMsg,
+        sceneCategory: assessment.sceneCategory,
+        severity: assessment.severity || 'LOW',
+        urgencyScore: assessment.urgencyScore || 20,
+        status: 'REVIEWING',
+        createdAt: incident.createdAt,
+      });
+    }
+  } catch (sseErr: any) {
+    console.error(`⚠️ SSE broadcast failed: ${sseErr.message}`);
+  }
+
+  // ── 3. Run Activity Logs & FCM Push Notifications in parallel (non-blocking for SSE) ──
+  const detectedLabel = (assessment.incidentType || 'Emergency').toUpperCase();
+  const activitiesToCreate: Array<{ incidentId: string; title: string; type: string }> = [
+    {
+      incidentId,
+      title: `AI analysis completed — ${detectedLabel} detected`,
+      type: 'AI_ANALYSIS',
+    },
+  ];
+  if (isRecapture) {
+    activitiesToCreate.push({
+      incidentId,
+      title: `⚠️ Liveness alert: Suspected recapture (${assessment.recaptureType || 'Screen/Photo'})`,
+      type: 'AI_ANALYSIS',
+    });
+  }
+  if (aiRecognized && recommended) {
+    activitiesToCreate.push({
+      incidentId,
+      title: `Auto-assigned to ${recommended} based on AI recommendation`,
+      type: 'ASSIGNED',
+    });
+  }
+
+  await Promise.allSettled([
+    prisma.incidentActivity
+      .createMany({ data: activitiesToCreate })
+      .catch((actErr: any) => console.warn(`⚠️ Failed to log AI activities for incident ${incidentId}:`, actErr.message)),
+
+    // Admin FCM push
+    (async () => {
+      if (!messaging) return;
       const admins = await prisma.user.findMany({
         where: { role: 'ADMIN', pushToken: { not: null } },
         select: { pushToken: true },
@@ -267,14 +292,11 @@ export async function processIncidentDirectly(
         });
         console.log(`📱 Admin push sent to ${adminTokens.length} device(s)`);
       }
-    } catch (pushErr: any) {
-      console.error(`⚠️ Admin push notification failed: ${pushErr.message}`);
-    }
-  }
+    })().catch((pushErr: any) => console.error(`⚠️ Admin push notification failed: ${pushErr.message}`)),
 
-  // ── 3b. Notify the reporter that their report was processed ───────────────
-  if (messaging) {
-    try {
+    // Reporter confirmation FCM push
+    (async () => {
+      if (!messaging) return;
       const reporter = await prisma.user.findUnique({
         where: { id: incident.reporterId },
         select: { pushToken: true },
@@ -307,38 +329,8 @@ export async function processIncidentDirectly(
         });
         console.log(`📱 Reporter confirmation push sent → incident ${incidentId}`);
       }
-    } catch (reporterPushErr: any) {
-      console.error(`⚠️ Reporter confirmation push failed: ${reporterPushErr.message}`);
-    }
-  }
-
-  // ── 4. Broadcast SSE to admin web dashboard ───────────────────────────────
-  try {
-    const { broadcastSseEvent } = await import('../controllers/incidentController');
-    if (aiRecognized) {
-      broadcastSseEvent('new_incident', {
-        id: incident.id,
-        aiDetectedType: assessment.incidentType,
-        aiRecommendedDept: recommended,
-        severity: assessment.severity || 'MEDIUM',
-        urgencyScore: assessment.urgencyScore || 50,
-        status: 'PENDING',
-        createdAt: incident.createdAt,
-      });
-    } else {
-      broadcastSseEvent('unrecognized_incident', {
-        id: incident.id,
-        aiDetectedType: isLowConfidence ? `${assessment.incidentType} (Low Confidence)` : assessment.incidentType,
-        aiConfidence,
-        severity: assessment.severity || 'LOW',
-        urgencyScore: assessment.urgencyScore || 20,
-        status: 'REVIEWING',
-        createdAt: incident.createdAt,
-      });
-    }
-  } catch (sseErr: any) {
-    console.error(`⚠️ SSE broadcast failed: ${sseErr.message}`);
-  }
+    })().catch((reporterPushErr: any) => console.error(`⚠️ Reporter confirmation push failed: ${reporterPushErr.message}`)),
+  ]);
 }
 
 // ─── Worker ────────────────────────────────────────────────────────────────────
@@ -362,7 +354,7 @@ export const incidentWorker = redis
           max: 12,                // Max 12 requests per minute (Gemini free tier quota is 15 RPM)
           duration: 60000,
         },
-        drainDelay: 30000,        // Wait 30s when queue is empty instead of tight polling
+        drainDelay: 1,            // Immediate job pickup when queue wakes up
         stalledInterval: 120000,  // Check stalled jobs every 2 min
         lockDuration: 60000,      // 60s lock for long Gemini vision queries
       }

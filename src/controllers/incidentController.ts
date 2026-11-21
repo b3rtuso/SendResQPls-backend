@@ -344,28 +344,19 @@ export const reportIncident = async (req: AuthRequest, res: Response) => {
       console.warn('⚠️ Immediate SSE broadcast failed:', sseErr.message);
     }
 
-    // ② Enqueue the AI classification job — non-blocking, fires in the background
-    try {
+    // ② Trigger AI classification immediately in-process (non-blocking, 0ms queue startup delay)
+    processIncidentDirectly(incident.id, imageUrl, lat, lng).catch((err) => {
+      console.error(`❌ Background AI execution failed for incident ${incident.id}:`, err.message);
+      // Fallback to BullMQ retry queue if direct execution threw unexpectedly
       if (incidentQueue) {
-        await incidentQueue.add('classify', {
+        incidentQueue.add('classify', {
           incidentId: incident.id,
           imageUrl,
           latitude: lat,
           longitude: lng,
-        });
-        console.log(`📥 Incident ${incident.id} saved. AI job enqueued.`);
-      } else {
-        processIncidentDirectly(incident.id, imageUrl, lat, lng).catch((err) => {
-          console.error(`❌ Background execution failed for incident ${incident.id}:`, err.message);
-        });
+        }).catch(() => {});
       }
-    } catch (queueErr: any) {
-      console.warn(`⚠️ Redis queue unavailable (${queueErr.message}). Fallback to direct background execution for incident ${incident.id}`);
-      // Fallback: process directly in the background without throwing an error or failing the user's report
-      processIncidentDirectly(incident.id, imageUrl, lat, lng).catch((err) => {
-        console.error(`❌ Fallback background execution failed for incident ${incident.id}:`, err.message);
-      });
-    }
+    });
 
     // ③ Respond immediately — user gets confirmation in < 300ms
     return res.status(201).json({

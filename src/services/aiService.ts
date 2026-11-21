@@ -178,27 +178,19 @@ Return ONLY a valid JSON object matching this exact schema:
   "reasoning": "<1 short sentence (max 15 words)>"
 }`;
 
-    const envModel = (process.env.GEMINI_MODEL || "").trim();
-    const isValidEnvModel =
-      envModel &&
-      !envModel.includes("1.5") &&
-      !envModel.includes("2.0") &&
-      !envModel.includes("2.5");
-
-    // Prioritize gemini-flash-latest first to avoid gemini-3.6-flash's 20 req/day Free Tier bottleneck
-    const candidateModels = Array.from(
-      new Set([
-        ...(isValidEnvModel ? [envModel] : []),
-        "gemini-flash-latest",
-        "gemini-3.6-flash",
-      ])
-    );
+    // Use only fast, live-verified available Flash Lite models (avoids 59s hangs on gemini-flash-latest & 404s on 1.5/2.0/2.5)
+    const candidateModels = [
+      "gemini-3.5-flash-lite",
+      "gemini-flash-lite-latest",
+      "gemini-3.1-flash-lite",
+    ];
 
     let parsed: any = null;
     let lastError: any = null;
 
-    // Fast pass across candidate models (0ms delay on failover to next model)
+    // Fast pass across candidate models with strict 10s per-model timeout and 0ms failover
     for (const modelName of candidateModels) {
+      let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
       try {
         const model = genAI.getGenerativeModel({
           model: modelName,
@@ -208,10 +200,17 @@ Return ONLY a valid JSON object matching this exact schema:
             responseMimeType: "application/json",
           },
         });
-        const result = await model.generateContent([
-          prompt,
-          { inlineData: { data: imageData, mimeType } },
+        const timeoutPromise = new Promise<never>((_, reject) => {
+          timeoutHandle = setTimeout(() => reject(new Error(`${modelName} timed out after 10s`)), 10000);
+        });
+        const result: any = await Promise.race([
+          model.generateContent([
+            prompt,
+            { inlineData: { data: imageData, mimeType } },
+          ]),
+          timeoutPromise,
         ]);
+        if (timeoutHandle) clearTimeout(timeoutHandle);
         if (result) {
           const text = result.response.text();
           const jsonMatch = text.match(/\{[\s\S]*\}/);
@@ -219,6 +218,7 @@ Return ONLY a valid JSON object matching this exact schema:
           if (parsed && typeof parsed === "object") break;
         }
       } catch (err: any) {
+        if (timeoutHandle) clearTimeout(timeoutHandle);
         lastError = err;
         console.warn(`⚠️ Gemini model ${modelName} failed (${err.message}), switching immediately to next candidate...`);
         continue;
