@@ -36,6 +36,8 @@ router.get('/sse', requireAdmin, (req, res) => {
   res.setHeader('Connection', 'keep-alive');
   res.setHeader('X-Accel-Buffering', 'no');
   res.flushHeaders();
+  // Immediately flush initial SSE comment so Render's reverse proxy opens the stream right away
+  res.write(': connected\n\n');
 
   const heartbeat = setInterval(() => {
     try { res.write(': heartbeat\n\n'); } catch { clearInterval(heartbeat); }
