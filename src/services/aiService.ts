@@ -88,7 +88,18 @@ export const runAIAnalysis = async (imageUrl: string) => {
       if (match) mimeType = match[1];
       imageData = parts[1];
     } else if (imageUrl.startsWith("http://") || imageUrl.startsWith("https://")) {
-      const imageResponse = await axios.get(imageUrl, { responseType: "arraybuffer" });
+      // If hosted on Cloudinary, fetch a lightweight 768px compressed JPEG for fast AI analysis
+      // (the original high-resolution URL remains saved in the database for dispatchers)
+      const optimizedUrl =
+        imageUrl.includes("res.cloudinary.com") && imageUrl.includes("/image/upload/")
+          ? imageUrl.replace("/image/upload/", "/image/upload/w_768,q_auto:good,f_jpg/")
+          : imageUrl;
+      let imageResponse;
+      try {
+        imageResponse = await axios.get(optimizedUrl, { responseType: "arraybuffer", timeout: 8000 });
+      } catch {
+        imageResponse = await axios.get(imageUrl, { responseType: "arraybuffer", timeout: 8000 });
+      }
       const contentType = imageResponse.headers["content-type"];
       if (contentType) mimeType = String(contentType);
       imageData = Buffer.from(imageResponse.data).toString("base64");
@@ -162,60 +173,54 @@ Return ONLY a valid JSON object matching this exact schema:
   "recaptureDetected": <true|false>,
   "recaptureType": "<NONE|SCREEN_DISPLAY|PRINTED_PHOTO>",
   "sceneCategory": "<PRINT_RECAPTURE|SCREEN_RECAPTURE|BLURRY_OR_DARK|NON_INCIDENT|VALID_EMERGENCY>",
-  "authenticityReasoning": "<concise explanation of why the photo belongs to this sceneCategory>",
+  "authenticityReasoning": "<1 short sentence (max 15 words)>",
   "suggestAction": "<PROCESS|REJECT>",
-  "reasoning": "<clear description of what is visible in the image>"
+  "reasoning": "<1 short sentence (max 15 words)>"
 }`;
 
-    const candidateModels = [
-      process.env.GEMINI_MODEL,
-      "gemini-3.6-flash",
-      "gemini-flash-latest",
-    ].filter(Boolean) as string[];
+    const envModel = (process.env.GEMINI_MODEL || "").trim();
+    const isValidEnvModel =
+      envModel &&
+      !envModel.includes("1.5") &&
+      !envModel.includes("2.0") &&
+      !envModel.includes("2.5");
+
+    // Prioritize gemini-flash-latest first to avoid gemini-3.6-flash's 20 req/day Free Tier bottleneck
+    const candidateModels = Array.from(
+      new Set([
+        ...(isValidEnvModel ? [envModel] : []),
+        "gemini-flash-latest",
+        "gemini-3.6-flash",
+      ])
+    );
 
     let parsed: any = null;
     let lastError: any = null;
 
+    // Fast pass across candidate models (0ms delay on failover to next model)
     for (const modelName of candidateModels) {
       try {
         const model = genAI.getGenerativeModel({
           model: modelName,
           generationConfig: {
             temperature: 0.1,
+            maxOutputTokens: 256,
             responseMimeType: "application/json",
           },
         });
-        let attempts = 0;
-        let result: any = null;
-        while (attempts < 2) {
-          try {
-            result = await model.generateContent([
-              prompt,
-              { inlineData: { data: imageData, mimeType } }
-            ]);
-            break;
-          } catch (genErr: any) {
-            attempts++;
-            const errMsg = (genErr.message || '').toLowerCase();
-            if (errMsg.includes('not found') || errMsg.includes('no longer available')) {
-              throw genErr;
-            }
-            if (attempts >= 2 || (!errMsg.includes('429') && !errMsg.includes('503') && !errMsg.includes('high demand') && !errMsg.includes('quota') && !errMsg.includes('resource_exhausted'))) {
-              throw genErr;
-            }
-            console.warn(`⚠️ Gemini rate limit hit on ${modelName}, backing off 2s before retry (attempt ${attempts})...`);
-            await new Promise(r => setTimeout(r, 2000));
-          }
-        }
+        const result = await model.generateContent([
+          prompt,
+          { inlineData: { data: imageData, mimeType } },
+        ]);
         if (result) {
           const text = result.response.text();
           const jsonMatch = text.match(/\{[\s\S]*\}/);
           parsed = jsonMatch ? JSON.parse(jsonMatch[0]) : JSON.parse(text);
-          if (parsed && typeof parsed === 'object') break;
+          if (parsed && typeof parsed === "object") break;
         }
       } catch (err: any) {
         lastError = err;
-        console.warn(`⚠️ Gemini model ${modelName} failed (${err.message}), trying next candidate...`);
+        console.warn(`⚠️ Gemini model ${modelName} failed (${err.message}), switching immediately to next candidate...`);
         continue;
       }
     }
